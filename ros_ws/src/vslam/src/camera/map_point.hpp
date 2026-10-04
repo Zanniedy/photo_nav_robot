@@ -60,7 +60,7 @@ inline std::vector<MapPoint> triangulate(
         result.push_back({ ++id_counter, cv::Point3f(x, y, z) });
     }
 
-    AURORA_DEBUG("triangulate: {}/{} points valid", result.size(), pts4d.cols);
+    AURORA_DEBUG("三角化: {}/{} 个点有效", result.size(), pts4d.cols);
     return result;
 }
 

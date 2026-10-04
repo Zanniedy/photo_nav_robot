@@ -4,7 +4,7 @@ camera:
   height: 720
   fps: 60
   format: MJPG
-  exposure: 128
+  exposure: 164
   auto_exposure: false
 params:
   fx: 1052.1928406003033

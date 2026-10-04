@@ -72,34 +72,78 @@ target_include_directories(vslam_clangd_helper PRIVATE
 # install(TARGETS <name> DESTINATION lib/${PROJECT_NAME})
 
 find_package(yaml-cpp REQUIRED)
+find_package(Ceres REQUIRED)
+
+# Pangolin：直接 add_subdirectory 源码，避免 find_package 找不到
+set(PANGOLIN_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/pangolin)
+if(EXISTS ${PANGOLIN_SRC_DIR}/CMakeLists.txt)
+  set(BUILD_TOOLS          OFF CACHE BOOL "" FORCE)
+  set(BUILD_EXAMPLES       OFF CACHE BOOL "" FORCE)
+  set(BUILD_PANGOLIN_PYTHON OFF CACHE BOOL "" FORCE)
+  # 强制静态链接，避免运行时找不到 libpango_*.so
+  set(_bsl_save ${BUILD_SHARED_LIBS})
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  add_subdirectory(${PANGOLIN_SRC_DIR}
+                   ${CMAKE_CURRENT_BINARY_DIR}/pangolin
+                   EXCLUDE_FROM_ALL)
+  set(BUILD_SHARED_LIBS ${_bsl_save} CACHE BOOL "" FORCE)
+  # Pangolin 源码有 anonymous struct，关掉其 targets 上的 pedantic
+  foreach(_pt pango_core pango_opengl pango_display pango_windowing
+              pango_vars pango_scene pango_glgeometry pango_video pango_plot)
+    if(TARGET ${_pt})
+      target_compile_options(${_pt} PRIVATE -Wno-pedantic -Wno-extra)
+    endif()
+  endforeach()
+  set(HAVE_PANGOLIN ON)
+  set(PANGOLIN_INCLUDE
+    ${PANGOLIN_SRC_DIR}/components/pango_core/include
+    ${PANGOLIN_SRC_DIR}/components/pango_opengl/include
+    ${PANGOLIN_SRC_DIR}/components/pango_display/include
+    ${PANGOLIN_SRC_DIR}/components/pango_windowing/include
+    ${PANGOLIN_SRC_DIR}/components/pango_vars/include
+    ${PANGOLIN_SRC_DIR}/components/pango_scene/include
+    ${PANGOLIN_SRC_DIR}/components/pango_plot/include
+    ${PANGOLIN_SRC_DIR}/components/pango_geometry/include
+    ${PANGOLIN_SRC_DIR}/components/pango_image/include
+    ${PANGOLIN_SRC_DIR}/components/pango_video/include
+    ${PANGOLIN_SRC_DIR}/components/tinyobj/include
+    ${CMAKE_CURRENT_BINARY_DIR}/pangolin/components/pango_core/include)
+  message(STATUS "Pangolin: building from source")
+else()
+  set(HAVE_PANGOLIN OFF)
+  message(STATUS "Pangolin source not found — trajectory viewer disabled")
+endif()
 
 set(SPDLOG_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/spdlog/include)
 
+# 公共 include + link 宏，避免重复
+macro(vslam_target name)
+  target_include_directories(${name} BEFORE PRIVATE
+    ${SPDLOG_INCLUDE}
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
+    ${OpenCV_INCLUDE_DIRS}
+    ${CERES_INCLUDE_DIRS}
+  )
+  target_compile_definitions(${name} PRIVATE FMT_HEADER_ONLY)
+  target_link_libraries(${name}
+    ${OpenCV_LIBS}
+    yaml-cpp
+    ${CERES_LIBRARIES}
+  )
+  if(HAVE_PANGOLIN)
+    target_include_directories(${name} BEFORE PRIVATE ${PANGOLIN_INCLUDE})
+    target_link_libraries(${name} pango_display pango_opengl pango_windowing pango_core)
+    target_compile_definitions(${name} PRIVATE HAVE_PANGOLIN)
+    target_compile_options(${name} PRIVATE -Wno-pedantic -Wno-extra)
+  endif()
+endmacro()
+
 add_executable(camera_open_test test/camera_open_test.cpp)
-target_include_directories(camera_open_test BEFORE PRIVATE
-  ${SPDLOG_INCLUDE}
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-  ${OpenCV_INCLUDE_DIRS}
-)
-target_compile_definitions(camera_open_test PRIVATE FMT_HEADER_ONLY)
-target_link_libraries(camera_open_test
-  ${OpenCV_LIBS}
-  yaml-cpp
-)
+vslam_target(camera_open_test)
 
 add_executable(camera_calibration test/camera_calibration.cpp)
-target_include_directories(camera_calibration BEFORE PRIVATE
-  ${SPDLOG_INCLUDE}
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-  ${OpenCV_INCLUDE_DIRS}
-)
-target_compile_definitions(camera_calibration PRIVATE FMT_HEADER_ONLY)
-target_link_libraries(camera_calibration
-  ${OpenCV_LIBS}
-  yaml-cpp
-)
+vslam_target(camera_calibration)
 
 install(
   TARGETS camera_open_test camera_calibration
@@ -107,17 +151,7 @@ install(
 )
 
 add_executable(frame_pipeline_test test/frame_pipeline_test.cpp)
-target_include_directories(frame_pipeline_test BEFORE PRIVATE
-  ${SPDLOG_INCLUDE}
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-  ${OpenCV_INCLUDE_DIRS}
-)
-target_compile_definitions(frame_pipeline_test PRIVATE FMT_HEADER_ONLY)
-target_link_libraries(frame_pipeline_test
-  ${OpenCV_LIBS}
-  yaml-cpp
-)
+vslam_target(frame_pipeline_test)
 
 install(
   TARGETS camera_open_test camera_calibration frame_pipeline_test
@@ -125,17 +159,7 @@ install(
 )
 
 add_executable(orb_test test/orb_test.cpp)
-target_include_directories(orb_test BEFORE PRIVATE
-  ${SPDLOG_INCLUDE}
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-  ${OpenCV_INCLUDE_DIRS}
-)
-target_compile_definitions(orb_test PRIVATE FMT_HEADER_ONLY)
-target_link_libraries(orb_test
-  ${OpenCV_LIBS}
-  yaml-cpp
-)
+vslam_target(orb_test)
 
 install(
   TARGETS orb_test
@@ -143,17 +167,7 @@ install(
 )
 
 add_executable(vslam_test test/vslam_test.cpp)
-target_include_directories(vslam_test BEFORE PRIVATE
-  ${SPDLOG_INCLUDE}
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-  ${OpenCV_INCLUDE_DIRS}
-)
-target_compile_definitions(vslam_test PRIVATE FMT_HEADER_ONLY)
-target_link_libraries(vslam_test
-  ${OpenCV_LIBS}
-  yaml-cpp
-)
+vslam_target(vslam_test)
 
 install(
   TARGETS vslam_test
