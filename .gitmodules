@@ -1,0 +1,4 @@
+[submodule "ros_ws/src/3rdparty/spdlog"]
+	path = ros_ws/src/3rdparty/spdlog
+	url = https://github.com/gabime/spdlog.git
+	branch = v1.13.0
