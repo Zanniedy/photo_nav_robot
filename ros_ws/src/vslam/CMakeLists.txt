@@ -88,11 +88,6 @@ target_link_libraries(camera_open_test
   yaml-cpp
 )
 
-install(
-  TARGETS camera_open_test
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 add_executable(camera_calibration test/camera_calibration.cpp)
 target_include_directories(camera_calibration BEFORE PRIVATE
   ${SPDLOG_INCLUDE}
@@ -107,7 +102,61 @@ target_link_libraries(camera_calibration
 )
 
 install(
-  TARGETS camera_calibration
+  TARGETS camera_open_test camera_calibration
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+add_executable(frame_pipeline_test test/frame_pipeline_test.cpp)
+target_include_directories(frame_pipeline_test BEFORE PRIVATE
+  ${SPDLOG_INCLUDE}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_compile_definitions(frame_pipeline_test PRIVATE FMT_HEADER_ONLY)
+target_link_libraries(frame_pipeline_test
+  ${OpenCV_LIBS}
+  yaml-cpp
+)
+
+install(
+  TARGETS camera_open_test camera_calibration frame_pipeline_test
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+add_executable(orb_test test/orb_test.cpp)
+target_include_directories(orb_test BEFORE PRIVATE
+  ${SPDLOG_INCLUDE}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_compile_definitions(orb_test PRIVATE FMT_HEADER_ONLY)
+target_link_libraries(orb_test
+  ${OpenCV_LIBS}
+  yaml-cpp
+)
+
+install(
+  TARGETS orb_test
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+add_executable(vslam_test test/vslam_test.cpp)
+target_include_directories(vslam_test BEFORE PRIVATE
+  ${SPDLOG_INCLUDE}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_compile_definitions(vslam_test PRIVATE FMT_HEADER_ONLY)
+target_link_libraries(vslam_test
+  ${OpenCV_LIBS}
+  yaml-cpp
+)
+
+install(
+  TARGETS vslam_test
   DESTINATION lib/${PROJECT_NAME}
 )
 
