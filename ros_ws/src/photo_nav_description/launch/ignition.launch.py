@@ -2,6 +2,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -14,6 +15,7 @@ def generate_launch_description():
     rviz_config   = os.path.join(pkg_share, 'rviz', 'robot.rviz')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
+    launch_rviz  = LaunchConfiguration('launch_rviz')
 
     robot_description_cmd   = Command(['xacro ', xacro_file])
     robot_description_param = ParameterValue(robot_description_cmd, value_type=str)
@@ -55,6 +57,7 @@ def generate_launch_description():
             '/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
             '/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model',
             '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            '/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU',
         ],
         parameters=[{'use_sim_time': use_sim_time}],
     )
@@ -65,15 +68,19 @@ def generate_launch_description():
         output='screen',
         arguments=['-d', rviz_config],
         parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(launch_rviz),
     )
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('world', default_value=default_world),
+        DeclareLaunchArgument('launch_rviz', default_value='true',
+                              description='Set false to suppress RViz (e.g. when called from sim_full)'),
         ignition_gazebo,
         robot_state_publisher,
         spawn_robot,
         ros_gz_bridge,
         rviz2,
     ])
+
 

@@ -1,7 +1,6 @@
 #!/bin/bash
 # 用法: source ./make.sh
 # 必须用 source 执行，conda deactivate 和 setup.bash 才能生效到当前终端
-set -e
 
 # 检测是否以 source 方式执行
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -28,14 +27,22 @@ if ! dpkg -s libasio-dev &>/dev/null; then
     sudo apt-get install -y libasio-dev
 fi
 
+if ! dpkg -s ros-humble-libpointmatcher &>/dev/null; then
+    echo "[dep] Installing missing dependency: ros-humble-libpointmatcher..."
+    sudo apt-get install -y ros-humble-libpointmatcher
+fi
+
 # 3. 构建
 echo "[1/2] Building..."
-colcon build --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "$@"
+if ! colcon build --cmake-force-configure --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -Wno-dev "$@"; then
+    echo "[error] Build failed."
+    return 1
+fi
 
 # 4. 合并 compile_commands.json（供 clangd 使用）
 echo "[2/2] Merging compile_commands.json..."
-find "$WORKSPACE_DIR/build" -name "compile_commands.json" | \
-    xargs jq -s 'add // []' > "$WORKSPACE_DIR/compile_commands.json"
+find "$WORKSPACE_DIR/build" -name "compile_commands.json" \
+    | xargs jq -s 'add // []' > "$WORKSPACE_DIR/compile_commands.json" 2>/dev/null || true
 
 # 5. source workspace，让当前终端能找到自定义消息类型和可执行文件
 source "$WORKSPACE_DIR/install/setup.bash"

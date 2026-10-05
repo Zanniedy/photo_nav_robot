@@ -1,0 +1,9 @@
+lio_slam_node:
+  ros__parameters:
+    scan_topic:   /scan
+    pub_topic:    /lio_odom
+    odom_frame:   odom
+    base_frame:   base_footprint
+    publish_tf:   true
+    buf_max:      200
+    loop_rate_hz: 10.0

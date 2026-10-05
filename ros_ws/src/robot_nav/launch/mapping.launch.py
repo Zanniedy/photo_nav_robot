@@ -26,8 +26,8 @@ def generate_launch_description():
 
     pcd_map_saver = Node(
         package='robot_nav',
-        executable='pcd_map_saver',
-        name='pcd_map_saver',
+        executable='pcd_map_node',
+        name='pcd_map_node',
         output='screen',
         parameters=[{
             'map_frame':   'map',
