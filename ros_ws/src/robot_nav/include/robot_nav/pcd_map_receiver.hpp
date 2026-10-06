@@ -5,6 +5,7 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
 
@@ -30,16 +31,25 @@ public:
             get_parameter("scan_topic").as_string(),
             rclcpp::SensorDataQoS(),
             [this](sensor_msgs::msg::LaserScan::SharedPtr msg) {
-                std::lock_guard<std::mutex> lk(scan_mtx_);
-                scan_buf_.push_back({*msg});
-                if (scan_buf_.size() > buf_max_) scan_buf_.pop_front();
+                {
+                    std::lock_guard<std::mutex> lk(scan_mtx_);
+                    scan_buf_.push_back({*msg});
+                    if (scan_buf_.size() > buf_max_) scan_buf_.pop_front();
+                }
+                scan_cv_.notify_one();
             });
     }
 
-    // 计算线程调用：取出并清空缓冲
-    std::deque<ScanStamped> drain_scans()
+    // shutdown 时唤醒 drain_scans 的 wait
+    void notify_shutdown() { scan_cv_.notify_all(); }
+
+    // 计算线程调用：阻塞等待直到有数据，取出并清空缓冲
+    std::deque<ScanStamped> drain_scans(std::atomic<bool> & running)
     {
-        std::lock_guard<std::mutex> lk(scan_mtx_);
+        std::unique_lock<std::mutex> lk(scan_mtx_);
+        scan_cv_.wait(lk, [this, &running] {
+            return !scan_buf_.empty() || !running;
+        });
         return std::exchange(scan_buf_, {});
     }
 
@@ -47,6 +57,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
 
     std::mutex scan_mtx_;
+    std::condition_variable scan_cv_;
     std::deque<ScanStamped> scan_buf_;
     std::size_t buf_max_{200};
 };

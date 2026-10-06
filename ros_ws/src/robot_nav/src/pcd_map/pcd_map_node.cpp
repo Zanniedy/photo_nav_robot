@@ -26,19 +26,41 @@ static void mapping_loop(
     pcdmap::PoseTransformer transformer(tf_buf);
     pcdmap::PointCloudMapper mapper(voxel_size);
 
-    RCLCPP_INFO(node->get_logger(), "Mapping thread started. Ctrl+C to save.");
+    RCLCPP_INFO(node->get_logger(), "Mapping thread started (map_frame=%s). Ctrl+C to save.",
+        map_frame.c_str());
+
+    // 等待 TF 链 map→lidar_link 第一次可用（slam_toolbox 发布 map→odom 之前先阻塞）
+    RCLCPP_INFO(node->get_logger(), "Waiting for TF: %s -> lidar_link ...", map_frame.c_str());
+    while (!g_shutdown) {
+        if (tf_buf->canTransform(map_frame, "lidar_link", tf2::TimePointZero)) {
+            RCLCPP_INFO(node->get_logger(), "TF available, mapping starts.");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    if (g_shutdown) return;
+
+    int tf_fail_count = 0;
 
     while (!g_shutdown) {
-        auto scans = node->drain_scans();
+        // 阻塞等待，有扫描帧才唤醒
+        auto scans = node->drain_scans(g_shutdown);
 
         for (const auto & s : scans) {
             auto cloud = transformer.transform_scan(s.msg, map_frame);
-            if (!cloud) continue;          // TF 失败跳过
+            if (!cloud) {
+                ++tf_fail_count;
+                if (tf_fail_count % 20 == 1) {
+                    RCLCPP_WARN(node->get_logger(),
+                        "TF lookup failed %d times (map_frame=%s, scan_frame=%s). "
+                        "Is slam_toolbox running and publishing map->odom?",
+                        tf_fail_count, map_frame.c_str(),
+                        s.msg.header.frame_id.c_str());
+                }
+                continue;
+            }
+            tf_fail_count = 0;
             mapper.add_cloud(cloud);
-        }
-
-        if (scans.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -50,7 +72,7 @@ static void mapping_loop(
     if (mapper.save(output_path)) {
         RCLCPP_INFO(node->get_logger(), "Saved successfully.");
     } else {
-        RCLCPP_ERROR(node->get_logger(), "Save failed (no points?).");
+        RCLCPP_ERROR(node->get_logger(), "Save failed — no valid points accumulated.");
     }
 }
 
@@ -84,6 +106,8 @@ int main(int argc, char ** argv)
     while (!g_shutdown && rclcpp::ok()) {
         exec.spin_some(std::chrono::milliseconds(10));
     }
+    g_shutdown = true;
+    node->notify_shutdown();  // 唤醒 drain_scans 的 wait
 
     worker.join();
     rclcpp::shutdown();

@@ -4,6 +4,7 @@
 #include <Eigen/Dense>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <pointmatcher/PointMatcher.h>
+#include <sstream>
 
 namespace lioslam {
 
@@ -20,7 +21,46 @@ using ICP = PM::ICP;
 class scan_match {
 public:
     scan_match() {
-        icp_.setDefault();
+        // 最小有效点数：太稀疏时直接拒绝
+        min_points_ = 20;
+
+        // 用 YAML 字符串配置 ICP，比 setDefault() 可控得多
+        std::istringstream cfg(R"yaml(
+readingDataPointsFilters:
+  - RandomSamplingDataPointsFilter:
+      prob: 0.75
+
+referenceDataPointsFilters:
+  - SurfaceNormalDataPointsFilter:
+      knn: 7
+
+matcher:
+  KDTreeMatcher:
+    knn: 1
+    epsilon: 0.1
+
+outlierFilters:
+  - TrimmedDistOutlierFilter:
+      ratio: 0.75
+
+errorMinimizer:
+  PointToPlaneErrorMinimizer
+
+transformationCheckers:
+  - CounterTransformationChecker:
+      maxIterationCount: 40
+  - DifferentialTransformationChecker:
+      minDiffRotErr:   0.0001
+      minDiffTransErr: 0.0001
+      smoothLength:    4
+
+inspector:
+  NullInspector
+
+logger:
+  NullLogger
+)yaml");
+        icp_.loadFromYaml(cfg);
     }
     ~scan_match() = default;
 
@@ -29,11 +69,16 @@ public:
     {
         DP ref  = scan_to_dp(prev);
         DP data = scan_to_dp(curr);
+        if (ref.getNbPoints()  < min_points_ ||
+            data.getNbPoints() < min_points_) {
+            return {0.0, 0.0, 0.0};
+        }
         return run_icp(ref, data);
     }
 
 private:
-    ICP icp_;
+    ICP    icp_;
+    size_t min_points_;
 
     // Convert a 2-D LaserScan into a libpointmatcher DataPoints (x, y, pad=1)
     DP scan_to_dp(const sensor_msgs::msg::LaserScan & scan) const

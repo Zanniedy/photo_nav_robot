@@ -40,6 +40,17 @@ ament_target_dependencies(pcd_map_node
   rclcpp sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_sensor_msgs pcl_conversions
 )
 
+add_executable(pcd_map_server_node src/pcd_map/pcd_map_server_node.cpp)
+target_include_directories(pcd_map_server_node PUBLIC
+  ${PCL_INCLUDE_DIRS}
+)
+target_link_libraries(pcd_map_server_node
+  ${PCL_LIBRARIES}
+)
+ament_target_dependencies(pcd_map_server_node
+  rclcpp sensor_msgs pcl_conversions
+)
+
 add_executable(lio_slam_node src/lio/lio_slam_node.cpp)
 target_include_directories(lio_slam_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/lio>
@@ -72,7 +83,7 @@ ament_target_dependencies(lio_ekf_node
   rclcpp nav_msgs sensor_msgs geometry_msgs tf2 tf2_ros
 )
 
-install(TARGETS pcd_map_node lio_slam_node odom_path_node lio_ekf_node
+install(TARGETS pcd_map_node pcd_map_server_node lio_slam_node odom_path_node lio_ekf_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

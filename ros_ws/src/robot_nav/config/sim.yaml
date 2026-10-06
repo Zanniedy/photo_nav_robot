@@ -1,0 +1,12 @@
+# 仿真环境参数
+# 供 sim.launch.py 读取
+
+sim:
+  use_sim_time: true
+
+  # Gazebo 世界文件（绝对路径或包相对路径）
+  # launch 文件里会用 photo_nav_description 包路径拼接 world_file
+  world_file: "worlds/obstacle_world.sdf"
+
+  # RViz 配置文件，相对于 photo_nav_description 包
+  rviz_config: "rviz/robot.rviz"

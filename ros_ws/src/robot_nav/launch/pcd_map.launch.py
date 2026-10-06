@@ -1,6 +1,6 @@
 """
-mapping.launch.py
-栅格建图：lio_ekf（接管 TF）+ slam_toolbox
+pcd_map.launch.py
+点云建图：lio_ekf（接管 TF）+ slam_toolbox（提供 map->lio_odom）+ pcd_map_node
 
 前提：sim.launch.py 已在另一个终端运行，且关闭了 lio_slam 的 TF 输出。
 
@@ -8,11 +8,9 @@ mapping.launch.py
   # 终端1：启动仿真，lio_slam 不发 TF
   ros2 launch photo_nav_description sim.launch.py slam_publish_tf:=false
 
-  # 终端2：启动建图，lio_ekf 发 TF
-  ros2 launch robot_nav mapping.launch.py
-
-重要：两个 launch 同时运行时，只能有一个节点发 lio_odom->base_footprint TF。
-若两个都发，TF 会双源竞争导致 map frame 下机器人抖动。
+  # 终端2：启动点云建图
+  ros2 launch robot_nav pcd_map.launch.py
+  Ctrl+C 触发 pcd_map_node 保存 .pcd 文件
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -27,10 +25,12 @@ def generate_launch_description():
 
     lio_ekf_config = os.path.join(nav_share, 'config', 'lio_ekf.yaml')
     slam_config    = os.path.join(nav_share, 'config', 'slam_toolbox.yaml')
+    pcd_map_config = os.path.join(nav_share, 'config', 'pcd_map.yaml')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
+    output_path  = LaunchConfiguration('output_path')
 
-    # EKF 接管 lio_odom->base_footprint TF，覆盖 yaml 里的 publish_tf: false
+    # EKF 接管 lio_odom->base_footprint TF
     lio_ekf = Node(
         package='robot_nav',
         executable='lio_ekf_node',
@@ -42,6 +42,7 @@ def generate_launch_description():
         }],
     )
 
+    # slam_toolbox 提供 map->lio_odom TF，供 pcd_map_node 做坐标变换
     slam_toolbox = Node(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
@@ -50,8 +51,25 @@ def generate_launch_description():
         parameters=[slam_config, {'use_sim_time': use_sim_time}],
     )
 
+    pcd_map = Node(
+        package='robot_nav',
+        executable='pcd_map_node',
+        name='pcd_map_node',
+        output='screen',
+        parameters=[pcd_map_config, {
+            'output_path':  output_path,
+            'use_sim_time': use_sim_time,
+        }],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument(
+            'output_path',
+            default_value=os.path.join(nav_share, 'maps', 'map.pcd'),
+            description='Ctrl+C 触发保存的 .pcd 文件路径',
+        ),
         lio_ekf,
         slam_toolbox,
+        pcd_map,
     ])

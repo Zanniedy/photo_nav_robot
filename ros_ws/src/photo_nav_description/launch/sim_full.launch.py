@@ -83,13 +83,16 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
-    # ── LIO + IMU EKF（无轮式里程计，实车通用）─────────────────────────────
+    # ── LIO + IMU EKF，发布 odom->base_footprint TF 供 slam_toolbox 使用 ──────
     lio_ekf = Node(
         package='robot_nav',
         executable='lio_ekf_node',
         name='lio_ekf_node',
         output='screen',
-        parameters=[{'use_sim_time': use_sim_time}],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'publish_tf':   True,
+        }],
     )
 
     return LaunchDescription([

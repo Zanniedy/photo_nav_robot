@@ -343,6 +343,8 @@
           <z><noise type="gaussian"><mean>0</mean><stddev>0.021</stddev></noise></z>
         </linear_acceleration>
       </imu>
+      <plugin filename="libignition-gazebo-imu-system.so"
+              name="ignition::gazebo::systems::Imu"/>
     </sensor>
   </gazebo>
 

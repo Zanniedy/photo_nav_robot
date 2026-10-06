@@ -1,0 +1,6 @@
+pcd_map_server_node:
+  ros__parameters:
+    map_path:        ""     # 留空则由 launch 文件传入，或在此填写绝对路径
+    map_frame:       map
+    publish_rate_hz: 1.0
+    voxel_size:      0.05

@@ -3,6 +3,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <tf2/exceptions.hpp>
+#include <tf2/time.h>
 #include <tf2_ros/buffer.hpp>
 #include <Eigen/Dense>
 #include <pcl/point_cloud.h>
@@ -28,9 +29,12 @@ public:
 
         geometry_msgs::msg::TransformStamped tf;
         try {
+            // TimePointZero = 取 TF buffer 里最新可用的变换，避免仿真时间戳精确匹配失败
             tf = tf_buffer_->lookupTransform(
-                target_frame, scan.header.frame_id, scan.header.stamp);
-        } catch (const tf2::TransformException &) {
+                target_frame, scan.header.frame_id,
+                tf2::TimePointZero,
+                tf2::durationFromSec(0.1));
+        } catch (const tf2::TransformException & ex) {
             return nullptr;
         }
 

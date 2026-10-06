@@ -1,0 +1,8 @@
+lio_ekf_node:
+  ros__parameters:
+    lio_odom_topic: /lio_odom
+    imu_topic:      /imu
+    pub_topic:      /lio_ekf_odom
+    odom_frame:     lio_odom
+    base_frame:     base_footprint
+    publish_tf:     false   # 仅在建图 launch 里覆盖为 true
