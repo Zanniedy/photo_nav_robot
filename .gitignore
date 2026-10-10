@@ -26,3 +26,15 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Large model files
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# Build artifacts in src
+ros_ws/src/**/build/
+ros_ws/src/**/*.a
+ros_ws/src/**/*.so
