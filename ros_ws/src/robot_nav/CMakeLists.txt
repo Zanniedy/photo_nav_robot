@@ -80,7 +80,7 @@ target_include_directories(lio_ekf_node PUBLIC
 )
 target_link_libraries(lio_ekf_node Eigen3::Eigen)
 ament_target_dependencies(lio_ekf_node
-  rclcpp nav_msgs sensor_msgs geometry_msgs tf2 tf2_ros
+  rclcpp nav_msgs std_msgs geometry_msgs tf2 tf2_ros
 )
 
 install(TARGETS pcd_map_node pcd_map_server_node lio_slam_node odom_path_node lio_ekf_node

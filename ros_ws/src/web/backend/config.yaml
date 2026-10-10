@@ -1,0 +1,8 @@
+robot_ip: "192.168.1.100"
+ros_domain_id: 0
+maps_dir: "~/maps"
+ros2_setup: "/opt/ros/humble/setup.bash"
+workspace_setup: "~/ros2_ws/install/setup.bash"
+log_buffer_size: 200
+lidar_serial_port: "/dev/ttyUSB0"
+lidar_baudrate: 460800

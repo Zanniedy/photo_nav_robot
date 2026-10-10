@@ -1,0 +1,8 @@
+camera:
+  device: /dev/video2
+  width: 1280
+  height: 720
+  fps: 60
+  format: MJPG
+  exposure: 164
+  auto_exposure: false

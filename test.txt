@@ -1,0 +1,128 @@
+/*===| 校验：DJI/RM 标准 CRC16(多项式 0x1021 反射、init 0xFFFF、无输出异或)
+        复用 Algorithm_Drivers/CRC8_CRC16.c 的 append_/verify_CRC16_check_sum
+        CRC16 占帧尾部 2 字节，低字节在前(小端) |===*/
+
+/** 《上位机下行数据结构体》(PC -> MCU)
+ *  PC 端按 byte 顺序发送，本结构体使用 __PACKED 保证无填充，共 19 字节
+ */
+typedef __PACKED_STRUCT
+{
+    uint8_t EN;                 //是否启用上位机控制
+    float Vy;                   //前后运动速度比例(-1~1)，对应摇杆满量程
+    float Wz;                   //旋转运动速度比例(-1~1)，对应摇杆满量程
+    float Reserve_1;            //保留
+    float Reserve_2;            //保留
+    uint16_t CRC16;             //前 17 字节的 CRC16，低字节在前
+} PC_Communicate_StructTypedef;
+
+/** 《上位机上行数据结构体》(MCU -> PC)
+ *  100Hz 上报，共 10 字节
+ */
+typedef __PACKED_STRUCT
+{
+    float Yaw;                  //Yaw 累计角度(°)，顺时针(俯视)为正
+    float Yaw_Speed;            //Yaw 角速度(°/s)，顺时针(俯视)为正
+    uint16_t CRC16;             //前 8 字节的 CRC16，低字节在前
+} PC_Tx_Communicate_StructTypedef;
+
+**
+ * @brief 上位机(PC)串口接收回调函数
+ *
+ *        优先级最低：仅当遥控器/蓝牙/NRF 均未连接时才会接管控制
+ *        EN=0 时 PC 仍保持在线，但不输出速度，机器人不运动
+ *
+ * @param UART3 收到的数组
+ * @param 本次收到的字节数
+ */
+void PC_Get_Data_CallBack(uint8_t *Data, uint16_t Size)
+{
+    static uint8_t PC_Valid_Cnt = 0;
+    
+    /*===| 帧长不足：作废并清掉确认计数(必须连续通过，与上报频率无关) |===*/
+    if(Size < PC_Frame_Size)                            { PC_Valid_Cnt = 0; return; }
+    
+    /*===| CRC16 校验失败：不刷新心跳，等待超时冷却后离线 |===*/
+    if(verify_CRC16_check_sum(Data, PC_Frame_Size) == 0) { PC_Valid_Cnt = 0; return; }
+    
+    memcpy(&PC_Communicate_Struct, Data, PC_Frame_Size);
+    
+    /*===| NaN/Inf 不可能是合法指令(会污染后续平滑与 PID)，直接丢弃该帧 |===*/
+    if(PC_Is_Valid_Value(PC_Communicate_Struct.Vy) == 0) { PC_Valid_Cnt = 0; return; }
+    if(PC_Is_Valid_Value(PC_Communicate_Struct.Wz) == 0) { PC_Valid_Cnt = 0; return; }
+    
+    /*===| 连续 PC_Online_Confirm 帧通过才判定为 PC 在线：
+            否则串口噪声凑出的单帧“合法”数据会让 PC 虚假上线并夺走控制权 |===*/
+    if(PC_Valid_Cnt < PC_Online_Confirm) PC_Valid_Cnt++;
+    
+    Remote_Control_Struct.PC_GetData_Ticker = 0;
+    
+    if(PC_Valid_Cnt < PC_Online_Confirm) return;
+    
+    Remote_Control_Struct.If_PC_Connect = 1;
+    
+    /*===| 优先级最低：高优先级数据源在线时不接管 |===*/
+    if(Remote_Control_Struct.If_Remote_Connect == 0 && Remote_Control_Struct.If_BT_Connect == 0 && Remote_Control_Struct.If_NRF_Connect == 0)
+    {
+        memcpy(&Remote_Control_Last_Struct, &Remote_Control_Struct, sizeof(Remote_Control_StructTypeDef));
+        
+        Remote_Control_Struct.RC_Side = 1;
+        
+        if(PC_Communicate_Struct.EN)
+        {
+            /*===| 不能直接对 packed 成员取地址(可能非 4 字节对齐 -> HardFault) |===*/
+            float Vy = PC_Communicate_Struct.Vy;
+            float Wz = PC_Communicate_Struct.Wz;
+            
+            /*===| 限幅到 ±1。注意 Deadline_Float 是“死区”函数(把区间内的值清零)，
+                    不能用来限幅；必须用 Limit_float |===*/
+            Limit_float(&Vy, 1.0f, -1.0f);
+            Limit_float(&Wz, 1.0f, -1.0f);
+            
+            PC_Communicate_Struct.Vy = Vy;
+            PC_Communicate_Struct.Wz = Wz;
+            
+            Remote_Control_Struct.RC_Right_Y = Vy;
+            Remote_Control_Struct.RC_Left_X = Wz;
+        }
+        else
+        {
+            /*===| EN=0：保持在线但不让机器人运动 |===*/
+            Remote_Control_Struct.RC_Right_Y = 0;
+            Remote_Control_Struct.RC_Left_X = 0;
+        }
+        
+        Remote_Control_Struct.RC_Right_X = 0;
+        Remote_Control_Struct.RC_Left_Y = 0;
+        Remote_Control_Struct.S1 = 0;
+        Remote_Control_Struct.S2 = 0;
+        
+        Remote_Control_Struct.If_Data_New = 1;
+    }
+}
+
+/**
+ * @brief 上位机数据上报(MCU -> PC, UART3, 100Hz)
+ *
+ *        仅当 PC 在线时才发送；使用 DMA 发送而不阻塞，
+ *        避免占用 1ms 周期任务(INS/Robo)的 CPU 时间
+ */
+void PC_Send_Data(void)
+{
+    /*===| PC 不在线不发送 |===*/
+    if(Remote_Control_Struct.If_PC_Connect == 0) return;
+    
+    /*===| 上一帧还没发完就跳过，避免 DMA 冲突 |===*/
+    if(huart3.gState != HAL_UART_STATE_READY) return;
+    
+    /*===| 单位统一(均为"顺时针为正")：Yaw = °，Yaw_Speed = °/s
+            INS_Data.Yaw_Speed 是 rad/s 且与 Yaw 反向，
+            所以在上报处换算(x180/π)并取负，不改动 INS 模块自身 |===*/
+    PC_Tx_Communicate_Struct.Yaw = INS_Data.YawTotalAngle;                      // °
+    PC_Tx_Communicate_Struct.Yaw_Speed = -INS_Data.Yaw_Speed * 57.295779513f;   // °/s
+    
+    /*===| 计算前 8 字节的 CRC16 并写到尾部 2 字节 |===*/
+    append_CRC16_check_sum((uint8_t *)&PC_Tx_Communicate_Struct, PC_Tx_Frame_Size);
+    
+    HAL_UART_Transmit_DMA(&huart3, (uint8_t *)&PC_Tx_Communicate_Struct, PC_Tx_Frame_Size);
+}
+可以参考我这代码用
