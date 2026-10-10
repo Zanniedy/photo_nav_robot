@@ -39,6 +39,7 @@ _apt_install libboost-system-dev
 echo "[1/2] Building..."
 if ! colcon build \
         --cmake-force-configure \
+        --packages-ignore face_openvio_detector face_detector serial_test \
         --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -Wno-dev \
         "$@"; then
     echo "[error] Build failed."

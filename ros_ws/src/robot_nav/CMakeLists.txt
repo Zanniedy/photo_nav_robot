@@ -26,6 +26,13 @@ set(CMAKE_SKIP_RPATH TRUE)
 # libpointmatcher installs its headers under the ROS overlay; expose them globally
 include_directories(${libpointmatcher_INCLUDE_DIRS})
 
+# ament overlay headers (tf2_ros, sensor_msgs, etc.)
+include_directories(
+  ${tf2_ros_INCLUDE_DIRS}
+  ${tf2_sensor_msgs_INCLUDE_DIRS}
+  ${pcl_conversions_INCLUDE_DIRS}
+)
+
 add_executable(pcd_map_node src/pcd_map/pcd_map_node.cpp)
 target_include_directories(pcd_map_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

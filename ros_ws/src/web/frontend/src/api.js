@@ -27,6 +27,7 @@ export const navStop = () => apiFetch('/api/nav/stop', { method: 'POST' })
 export const getStatus = () => apiFetch('/api/status')
 export const lidarStart = () => apiFetch('/api/lidar/start', { method: 'POST' })
 export const lidarStop = () => apiFetch('/api/lidar/stop', { method: 'POST' })
+export const runDiag = () => apiFetch('/api/diag/check')
 
 export async function getLogsEventSource() {
   await initBaseUrl()

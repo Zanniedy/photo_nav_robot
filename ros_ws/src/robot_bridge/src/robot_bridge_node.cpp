@@ -77,6 +77,20 @@ public:
         driver_->start();
         RCLCPP_INFO(this->get_logger(), "Serial driver started");
 
+        // 心跳定时器：10Hz，保持 PC 在线状态
+        heartbeat_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(100),
+            [this]() {
+                TxTask task{1, 0.0f, 0.0f};
+                {
+                    std::lock_guard<std::mutex> lk(tx_mutex_);
+                    if (tx_queue_.empty()) tx_queue_.push(task);
+                }
+                tx_cv_.notify_one();
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "[TX] heartbeat sent EN=1 Vy=0 Wz=0");
+            });
+
         // TX worker
         tx_thread_ = std::thread(&RobotBridgeNode::tx_worker, this);
         // RX worker
@@ -119,13 +133,20 @@ private:
             std::memcpy(buf.data(), &f, sizeof(PcDownFrame));
             crc16_append(buf.data(), buf.size());
 
+            RCLCPP_DEBUG(this->get_logger(),
+                "[TX] raw frame (%zu bytes): EN=%d Vy=%.2f Wz=%.2f CRC=0x%04X",
+                buf.size(), f.EN, f.Vy, f.Wz,
+                (uint16_t)(buf[17] | (buf[18] << 8)));
+
             driver_->write(buf);
         }
     }
 
     // ── RX worker: 从队列取原始字节，解析 PcUpFrame，发布话题 ───────────────
     void rx_worker() {
-        std::vector<uint8_t> stash;  // 跨包粘包缓冲
+        std::vector<uint8_t> stash;
+        std::size_t total_bytes = 0;
+        std::size_t total_frames = 0;
 
         while (running_) {
             std::vector<uint8_t> chunk;
@@ -137,13 +158,18 @@ private:
                 rx_queue_.pop();
             }
 
+            total_bytes += chunk.size();
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "[RX] raw bytes received total=%zu stash=%zu",
+                total_bytes, stash.size());
+
             stash.insert(stash.end(), chunk.begin(), chunk.end());
 
-            // 消费完整帧
             while (stash.size() >= sizeof(PcUpFrame)) {
                 if (!crc16_verify(stash.data(), sizeof(PcUpFrame))) {
-                    // 丢一字节，尝试重新对齐
-                    RCLCPP_WARN(this->get_logger(), "CRC16 mismatch, re-aligning");
+                    RCLCPP_WARN(this->get_logger(),
+                        "[RX] CRC16 mismatch, re-aligning. stash[0]=0x%02X stash[1]=0x%02X",
+                        stash[0], stash[1]);
                     stash.erase(stash.begin());
                     continue;
                 }
@@ -151,6 +177,11 @@ private:
                 PcUpFrame f{};
                 std::memcpy(&f, stash.data(), sizeof(PcUpFrame));
                 stash.erase(stash.begin(), stash.begin() + sizeof(PcUpFrame));
+                total_frames++;
+
+                RCLCPP_INFO(this->get_logger(),
+                    "[RX] frame #%zu Yaw=%.3f° YawSpeed=%.3f°/s",
+                    total_frames, f.Yaw, f.Yaw_Speed);
 
                 auto yaw_msg       = std_msgs::msg::Float32();
                 auto yaw_speed_msg = std_msgs::msg::Float32();
@@ -159,9 +190,6 @@ private:
 
                 yaw_pub_->publish(yaw_msg);
                 yaw_speed_pub_->publish(yaw_speed_msg);
-
-                RCLCPP_DEBUG(this->get_logger(),
-                    "Yaw=%.3f° Yaw_Speed=%.3f°/s", f.Yaw, f.Yaw_Speed);
             }
         }
     }
@@ -185,6 +213,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr        yaw_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr        yaw_speed_pub_;
+    rclcpp::TimerBase::SharedPtr                                heartbeat_timer_;
 };
 
 } // namespace robot_bridge

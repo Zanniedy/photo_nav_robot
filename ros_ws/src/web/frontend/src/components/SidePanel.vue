@@ -1,11 +1,37 @@
 <template>
   <aside class="side-panel">
-    <!-- 模式控制 -->
+    <!-- 系统自检 -->
+    <section class="section">
+      <div class="label">系统自检
+        <button class="refresh-btn" @click="runCheck" :disabled="diagRunning">
+          {{ diagRunning ? '检测中...' : '检测' }}
+        </button>
+      </div>
+      <div v-if="diagItems.length === 0" class="msg">点击检测查看系统状态</div>
+      <div v-for="item in diagItems" :key="item.key" class="diag-row">
+        <span class="diag-icon">{{ item.ok ? '✓' : '✗' }}</span>
+        <span class="diag-label" :class="{ 'diag-ok': item.ok, 'diag-fail': !item.ok }">{{ item.label }}</span>
+        <span v-if="!item.ok" class="diag-reason">{{ item.reason }}</span>
+      </div>
+    </section>
     <section class="section">
       <div class="label">模式</div>
-      <button :class="{ active: mode === 'mapping' }" @click="startMapping">建图</button>
+      <button :class="{ active: mode === 'mapping' }" @click="startMapping" :disabled="startingMapping">
+        {{ startingMapping ? startMsg : '建图' }}
+      </button>
       <button :class="{ active: mode === 'navigation' }" @click="showNavPanel = true">导航</button>
       <button v-if="mode !== 'idle'" @click="stopAll" class="stop-btn">停止</button>
+      <div v-if="startError" class="msg err-msg">{{ startError }}</div>
+    </section>
+
+    <!-- 串口设备 -->
+    <section class="section">
+      <div class="label">串口设备 <button class="refresh-btn" @click="refreshPorts">刷新</button></div>
+      <div v-if="serialPorts.length === 0" class="msg">未检测到设备</div>
+      <div v-for="p in serialPorts" :key="p.port" class="port-row">
+        <span class="port-name">{{ p.port }}</span>
+        <span class="port-label">{{ p.label || '未知设备' }}</span>
+      </div>
     </section>
 
     <!-- 激光雷达 -->
@@ -80,14 +106,33 @@ const lidarMsg = ref('')
 const logs = ref([])
 const logsEl = ref(null)
 const imu = reactive({ ax: '--', ay: '--', az: '--', gx: '--', gy: '--', gz: '--' })
+const serialPorts = ref([])
+const diagItems = ref([])
+const diagRunning = ref(false)
+const startingMapping = ref(false)
+const startMsg = ref('启动中...')
+const startError = ref('')
 let evtSource = null
 let unsubs = []
 
 function fmt(v) { return typeof v === 'number' ? v.toFixed(2) : '--' }
 
+async function runCheck() {
+  diagRunning.value = true
+  try {
+    const res = await api.runDiag()
+    diagItems.value = Object.entries(res.items).map(([key, v]) => ({ key, ...v }))
+  } catch (e) {
+    diagItems.value = [{ key: 'err', ok: false, label: '自检失败', reason: e.message }]
+  } finally {
+    diagRunning.value = false
+  }
+}
+
 onMounted(() => {
   loadMaps()
   initLogs()
+  refreshPorts()
   unsubs.push(subscribe('/imu/data', 'sensor_msgs/Imu', (msg) => {
     const a = msg.linear_acceleration
     const g = msg.angular_velocity
@@ -98,14 +143,34 @@ onMounted(() => {
 
 onUnmounted(() => { evtSource?.close(); unsubs.forEach(u => u()) })
 
+async function refreshPorts() {
+  try {
+    const res = await api.getSerialPorts()
+    serialPorts.value = res.ports
+  } catch (e) {
+    serialPorts.value = []
+  }
+}
+
 async function loadMaps() {
   maps.value = await api.getMaps()
 }
 
 async function startMapping() {
-  await api.slamStart()
-  emit('update:mode', 'mapping')
-  showNavPanel.value = false
+  startingMapping.value = true
+  startError.value = ''
+  startMsg.value = '启动bridge...'
+  try {
+    await api.slamStart()
+    emit('update:mode', 'mapping')
+    showNavPanel.value = false
+    startMsg.value = '建图'
+  } catch (e) {
+    startError.value = e.message
+    emit('update:mode', 'idle')
+  } finally {
+    startingMapping.value = false
+  }
 }
 
 async function startNav(name) {
@@ -184,5 +249,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 .logs-section { flex: 1; display: flex; flex-direction: column; min-height: 120px; }
 .logs { flex: 1; overflow-y: auto; font-size: 0.65rem; color: #6a6; font-family: monospace;
   background: #0a0a1a; padding: 4px; max-height: 200px; }
+.port-row { display: flex; justify-content: space-between; align-items: center;
+  padding: 2px 0; font-size: 0.75rem; font-family: monospace; }
+.port-name { color: #8cf; }
+.port-label { color: #aaa; font-size: 0.7rem; }
 .log-line { word-break: break-all; line-height: 1.4; }
+.diag-row { display: flex; align-items: flex-start; gap: 4px; padding: 2px 0; font-size: 0.75rem; flex-wrap: wrap; }
+.diag-icon { width: 12px; flex-shrink: 0; }
+.diag-label { font-family: monospace; }
+.diag-ok { color: #4f4; }
+.diag-fail { color: #f77; }
+.diag-reason { color: #a88; font-size: 0.65rem; width: 100%; padding-left: 16px; line-height: 1.3; }
+.err-msg { color: #f77; font-size: 0.72rem; margin-top: 4px; word-break: break-all; }
 </style>

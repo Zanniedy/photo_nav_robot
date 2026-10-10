@@ -4,7 +4,7 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <tf2/exceptions.hpp>
 #include <tf2/time.h>
-#include <tf2_ros/buffer.hpp>
+#include <tf2_ros/buffer.h>
 #include <Eigen/Dense>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>

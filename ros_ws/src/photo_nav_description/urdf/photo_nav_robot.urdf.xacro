@@ -181,7 +181,7 @@
     Single-line 2D lidar at ~1.0m above ground, mounted on the front face of the chassis.
     z offset from base_link: lidar_z_from_ground - chassis_z
   -->
-  <link name="lidar_link">
+  <link name="laser">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -203,8 +203,7 @@
 
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
-    <child  link="lidar_link"/>
-    <!-- On the front face of chassis, 1.0m above ground -->
+    <child  link="laser"/>
     <origin xyz="${chassis_radius} 0 ${lidar_z_from_ground - chassis_z}" rpy="0 0 0"/>
   </joint>
 
@@ -249,7 +248,7 @@
   </joint>
 
   <!-- ==================== LIDAR SENSOR PLUGIN ==================== -->
-  <gazebo reference="lidar_link">
+  <gazebo reference="laser">
     <sensor name="lidar" type="gpu_lidar">
       <topic>scan</topic>
       <ignition_frame_id>lidar_link</ignition_frame_id>

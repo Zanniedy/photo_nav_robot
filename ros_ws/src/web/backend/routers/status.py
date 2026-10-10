@@ -21,7 +21,7 @@ def get_status():
         "mode": _current_mode(),
         "processes": {
             name: process_mgr.is_running(name)
-            for name in ["slam_toolbox", "nav2", "map_server", "lidar"]
+            for name in ["robot_bridge", "lidar", "lio_slam", "slam_toolbox", "nav2", "map_server"]
         },
     }
 

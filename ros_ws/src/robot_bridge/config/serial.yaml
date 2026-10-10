@@ -1,5 +1,5 @@
 serial:
-  device_name: "/dev/ttyUSB0"
+  device_name: "/dev/ttyUSB1"
   baud_rate: 115200
   char_size: 8
   read_buf_size: 4096

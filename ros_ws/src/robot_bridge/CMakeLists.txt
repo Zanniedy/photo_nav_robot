@@ -29,7 +29,7 @@ target_include_directories(robot_bridge_node PRIVATE
 
 target_link_libraries(robot_bridge_node
   ${Boost_LIBRARIES}
-  yaml-cpp::yaml-cpp
+  ${YAML_CPP_LIBRARIES}
 )
 
 ament_target_dependencies(robot_bridge_node
