@@ -1,8 +1,28 @@
-robot_ip: "192.168.10.42"
+# Robot UI 后端配置（可用环境变量 ROBOT_UI_CONFIG 指向另一份，比如仿真）
+port: 8000
 ros_domain_id: 0
-maps_dir: "~/max_robot/maps"
 ros2_setup: "/opt/ros/humble/setup.bash"
 workspace_setup: "~/max_robot/ros_ws/install/setup.bash"
-log_buffer_size: 200
-lidar_serial_port: "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_bc333ee39c31f1119715925f30d20014-if00-port0"
-lidar_baudrate: 460800
+maps_dir: "~/max_robot/maps"
+log_buffer_size: 2000
+
+# 后端启动时自动拉起的进程
+autostart: [rosbridge]
+
+# 各进程的启动命令（bash 执行，已 source ROS 环境）
+#   base:  底盘 + 雷达 + lio + ekf + 静态TF（不含 slam_toolbox）
+#   slam:  slam_toolbox 建图，叠在 base 上
+#   nav:   map_server + 定位 + nav2，叠在 base 上；{map} 替换为地图 yaml 绝对路径
+processes:
+  rosbridge: "ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090"
+  base: "ros2 launch robot_nav robot.launch.py slam:=false"
+  slam: >-
+    ros2 run slam_toolbox async_slam_toolbox_node --ros-args
+    --params-file $(ros2 pkg prefix robot_nav)/share/robot_nav/config/slam_toolbox.yaml
+    -p use_sim_time:=false
+  nav: "ros2 launch robot_nav nav2.launch.py use_sim_time:=false launch_rviz:=false map:={map}"
+
+# 自检用的串口（by-id）
+serial_devices:
+  bridge: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+  lidar: "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_bc333ee39c31f1119715925f30d20014-if00-port0"
