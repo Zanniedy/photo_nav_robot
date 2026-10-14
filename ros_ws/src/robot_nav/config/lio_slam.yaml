@@ -2,8 +2,15 @@ lio_slam_node:
   ros__parameters:
     scan_topic:   /scan
     pub_topic:    /lio_odom
+    yaw_topic:    /robot/yaw
     odom_frame:   lio_odom
     base_frame:   base_footprint
     publish_tf:   false
     buf_max:      200
     loop_rate_hz: 10.0
+    # 门限 = ICP 结果相对预测(上一位姿 + IMU yaw 增量)的偏差，不是帧间运动量
+    max_trans:    0.10   # m
+    max_rot:      0.08   # rad (~4.6°)，IMU 短时间内很准，偏差大说明 ICP 退化/误匹配
+    kf_trans:     0.30   # 相对关键帧平移超过此值换关键帧 (m)
+    kf_rot:       0.35   # 相对关键帧旋转超过此值换关键帧 (rad)
+    max_rejects:  10     # 连续拒绝超过此数强制重置关键帧

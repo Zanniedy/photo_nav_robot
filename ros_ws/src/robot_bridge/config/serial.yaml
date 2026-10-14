@@ -1,5 +1,6 @@
 serial:
-  device_name: "/dev/ttyUSB1"
+  # by-id 路径不随插拔顺序变化（ttyUSB0/1 上电时会对调）
+  device_name: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
   baud_rate: 115200
   char_size: 8
   read_buf_size: 4096

@@ -1,8 +1,16 @@
 lio_ekf_node:
   ros__parameters:
-    lio_odom_topic: /lio_odom
-    imu_topic:      /imu
-    pub_topic:      /lio_ekf_odom
-    odom_frame:     lio_odom
-    base_frame:     base_footprint
-    publish_tf:     false   # 仅在建图 launch 里覆盖为 true
+    lio_odom_topic:  /lio_odom
+    yaw_speed_topic: /robot/yaw_speed
+    yaw_topic:       /robot/yaw
+    pub_topic:       /lio_ekf_odom
+    odom_frame:      lio_odom
+    base_frame:      base_footprint
+    publish_tf:      false   # 仅在建图 launch 里覆盖为 true
+
+    # EKF 噪声参数（越小越信任该来源）
+    q_xy:       0.025    # 过程噪声：位置 m²/s
+    q_yaw:      0.001    # 过程噪声：yaw rad²/s
+    r_lio_xy:   0.0025   # lio_odom 位置观测噪声 (0.05m)²
+    r_lio_yaw:  0.0012   # lio_odom yaw 观测噪声 (~2°)²
+    r_yaw:      0.0003   # /robot/yaw 观测噪声 (~1°)²

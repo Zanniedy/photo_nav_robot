@@ -82,3 +82,5 @@ struct PcUpFrame {     // MCU -> PC, 10 bytes
 
 static_assert(sizeof(PcDownFrame) == 19, "PcDownFrame size mismatch");
 static_assert(sizeof(PcUpFrame)   == 10, "PcUpFrame size mismatch");
+
+

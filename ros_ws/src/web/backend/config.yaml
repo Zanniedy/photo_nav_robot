@@ -4,5 +4,5 @@ maps_dir: "~/max_robot/maps"
 ros2_setup: "/opt/ros/humble/setup.bash"
 workspace_setup: "~/max_robot/ros_ws/install/setup.bash"
 log_buffer_size: 200
-lidar_serial_port: "/dev/ttyUSB1"
+lidar_serial_port: "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_bc333ee39c31f1119715925f30d20014-if00-port0"
 lidar_baudrate: 460800

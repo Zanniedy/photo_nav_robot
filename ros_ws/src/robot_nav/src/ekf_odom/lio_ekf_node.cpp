@@ -19,7 +19,12 @@ namespace lio_ekf {
 
 struct ImuMeas {
     double stamp;
-    double yaw_rate;
+    double yaw_rate;  // rad/s
+};
+
+struct YawMeas {
+    double stamp;
+    double yaw;       // rad
 };
 
 struct LioMeas {
@@ -32,18 +37,60 @@ public:
     explicit LioEkfNode(const rclcpp::NodeOptions& opts = rclcpp::NodeOptions{})
         : Node("lio_ekf_node", opts)
     {
-        declare_parameter("lio_odom_topic",   "/lio_odom");
-        declare_parameter("yaw_speed_topic",  "/robot/yaw_speed");
-        declare_parameter("pub_topic",        "/lio_ekf_odom");
-        declare_parameter("odom_frame",       "odom");
-        declare_parameter("base_frame",       "base_footprint");
-        declare_parameter("publish_tf",       false);
+        declare_parameter("lio_odom_topic",  "/lio_odom");
+        declare_parameter("yaw_speed_topic", "/robot/yaw_speed");
+        declare_parameter("yaw_topic",       "/robot/yaw");
+        declare_parameter("pub_topic",       "/lio_ekf_odom");
+        declare_parameter("odom_frame",      "lio_odom");
+        declare_parameter("base_frame",      "base_footprint");
+        declare_parameter("publish_tf",      false);
+
+        // EKF 噪声参数，可通过 yaml 覆盖
+        declare_parameter("q_xy",      0.025);
+        declare_parameter("q_yaw",     1e-3);
+        declare_parameter("r_lio_xy",  0.0025);
+        declare_parameter("r_lio_yaw", 0.0012);
+        declare_parameter("r_yaw",     0.0003);
 
         odom_frame_ = get_parameter("odom_frame").as_string();
         base_frame_ = get_parameter("base_frame").as_string();
         publish_tf_ = get_parameter("publish_tf").as_bool();
 
-        // LIO 里程计 → lio_buf_
+        ekf_.set_Q    (get_parameter("q_xy").as_double(),
+                       get_parameter("q_yaw").as_double());
+        ekf_.set_R_lio(get_parameter("r_lio_xy").as_double(),
+                       get_parameter("r_lio_yaw").as_double());
+        ekf_.set_r_yaw(get_parameter("r_yaw").as_double());
+
+        odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
+            get_parameter("pub_topic").as_string(), 10);
+
+        if (publish_tf_)
+            tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
+        // /robot/yaw_speed (°/s) → predict 队列
+        yaw_speed_sub_ = create_subscription<std_msgs::msg::Float32>(
+            get_parameter("yaw_speed_topic").as_string(),
+            rclcpp::QoS(10).reliable(),
+            [this](std_msgs::msg::Float32::SharedPtr msg) {
+                ImuMeas m;
+                m.stamp    = now().seconds();
+                m.yaw_rate = msg->data * (M_PI / 180.0);
+                push_imu(m);
+            });
+
+        // /robot/yaw (°) → yaw update 队列
+        yaw_sub_ = create_subscription<std_msgs::msg::Float32>(
+            get_parameter("yaw_topic").as_string(),
+            rclcpp::QoS(10).reliable(),
+            [this](std_msgs::msg::Float32::SharedPtr msg) {
+                YawMeas m;
+                m.stamp = now().seconds();
+                m.yaw   = msg->data * (M_PI / 180.0);
+                push_yaw(m);
+            });
+
+        // lio_odom → lio update 队列
         lio_sub_ = create_subscription<nav_msgs::msg::Odometry>(
             get_parameter("lio_odom_topic").as_string(),
             rclcpp::QoS(10).best_effort(),
@@ -61,24 +108,7 @@ public:
                 push_lio(m);
             });
 
-        // robot_bridge 发布的 yaw_speed (°/s) → imu_buf_（转 rad/s）
-        yaw_speed_sub_ = create_subscription<std_msgs::msg::Float32>(
-            get_parameter("yaw_speed_topic").as_string(),
-            rclcpp::QoS(10).reliable(),
-            [this](std_msgs::msg::Float32::SharedPtr msg) {
-                ImuMeas m;
-                m.stamp    = now().seconds();
-                m.yaw_rate = msg->data * (M_PI / 180.0);  // °/s → rad/s
-                push_imu(m);
-            });
-
-        odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
-            get_parameter("pub_topic").as_string(), 10);
-
-        if (publish_tf_)
-            tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-
-        running_ = true;
+        running_     = true;
         proc_thread_ = std::thread(&LioEkfNode::process_loop, this);
         pub_thread_  = std::thread(&LioEkfNode::publish_loop,  this);
     }
@@ -92,61 +122,69 @@ public:
     }
 
 private:
-    // ── 数据入队 ────────────────────────────────────────────────────────────
     void push_imu(const ImuMeas& m) {
-        {
-            std::lock_guard<std::mutex> lk(buf_mtx_);
-            if (imu_buf_.size() >= BUF_MAX) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                    "imu_buf full, dropping oldest");
-                imu_buf_.pop_front();
-            }
-            imu_buf_.push_back(m);
-        }
+        { std::lock_guard<std::mutex> lk(buf_mtx_); imu_buf_.push_back(m); trim(imu_buf_); }
         proc_cv_.notify_one();
     }
-
+    void push_yaw(const YawMeas& m) {
+        { std::lock_guard<std::mutex> lk(buf_mtx_); yaw_buf_.push_back(m); trim(yaw_buf_); }
+        proc_cv_.notify_one();
+    }
     void push_lio(const LioMeas& m) {
-        {
-            std::lock_guard<std::mutex> lk(buf_mtx_);
-            if (lio_buf_.size() >= BUF_MAX) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                    "lio_buf full, dropping oldest");
-                lio_buf_.pop_front();
-            }
-            lio_buf_.push_back(m);
-        }
+        { std::lock_guard<std::mutex> lk(buf_mtx_); lio_buf_.push_back(m); trim(lio_buf_); }
         proc_cv_.notify_one();
     }
 
-    // ── 线程1：EKF predict + update ────────────────────────────────────────
+    template<typename T>
+    void trim(std::deque<T>& q) {
+        while (q.size() > BUF_MAX) q.pop_front();
+    }
+
+    // ── 线程1：EKF predict / update ────────────────────────────────────────
     void process_loop() {
         double last_imu_t  = -1.0;
         bool   initialized = false;
 
         while (running_) {
-            std::deque<ImuMeas> imu_work;
+            // 每次只取一帧 IMU，其余测量批量取
+            ImuMeas  imu{};
+            bool     has_imu = false;
+            std::deque<YawMeas> yaw_work;
             std::deque<LioMeas> lio_work;
             {
                 std::unique_lock<std::mutex> lk(buf_mtx_);
                 proc_cv_.wait(lk, [this] {
-                    return (!imu_buf_.empty() || !lio_buf_.empty()) || !running_;
+                    return !imu_buf_.empty() || !yaw_buf_.empty()
+                        || !lio_buf_.empty() || !running_;
                 });
                 if (!running_) break;
-                imu_work.swap(imu_buf_);
+
+                // 每次只消费一帧 IMU，保证 dt 是真实相邻帧间隔
+                if (!imu_buf_.empty()) {
+                    imu     = imu_buf_.front();
+                    imu_buf_.pop_front();
+                    has_imu = true;
+                }
+                yaw_work.swap(yaw_buf_);
                 lio_work.swap(lio_buf_);
             }
 
-            // IMU predict
-            for (const auto& m : imu_work) {
+            // predict（单帧，dt 是真实相邻帧间隔）
+            if (has_imu) {
                 if (initialized && last_imu_t > 0.0) {
-                    double dt = m.stamp - last_imu_t;
-                    if (dt > 0.0) ekf_.predict(dt, m.yaw_rate);
+                    double dt = imu.stamp - last_imu_t;
+                    if (dt > 0.0) ekf_.predict(dt, imu.yaw_rate);
                 }
-                last_imu_t = m.stamp;
+                last_imu_t = imu.stamp;
             }
 
-            // LIO update
+            // yaw update
+            for (const auto& m : yaw_work) {
+                if (initialized)
+                    ekf_.update_yaw(m.yaw);
+            }
+
+            // lio update
             bool   updated      = false;
             double latest_stamp = 0.0;
             for (const auto& m : lio_work) {
@@ -155,7 +193,7 @@ private:
                     initialized = true;
                     last_imu_t  = m.stamp;
                 } else {
-                    ekf_.update(m.px, m.py, m.yaw);
+                    ekf_.update_lio(m.px, m.py, m.yaw);
                 }
                 latest_stamp = m.stamp;
                 updated = true;
@@ -194,7 +232,6 @@ private:
         }
     }
 
-    // ── 打包当前 EKF 状态 ────────────────────────────────────────────────────
     void enqueue_odom(double stamp_sec) {
         const auto& x = ekf_.state();
         tf2::Quaternion q;
@@ -216,11 +253,7 @@ private:
 
         {
             std::lock_guard<std::mutex> lk(odom_mtx_);
-            if (odom_buf_.size() >= BUF_MAX) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                    "odom_buf full, dropping oldest");
-                odom_buf_.pop_front();
-            }
+            if (odom_buf_.size() >= BUF_MAX) odom_buf_.pop_front();
             odom_buf_.push_back(std::move(msg));
         }
         odom_cv_.notify_one();
@@ -234,16 +267,16 @@ private:
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr lio_sub_;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr  yaw_speed_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr  yaw_sub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr    odom_pub_;
     std::unique_ptr<tf2_ros::TransformBroadcaster>           tf_broadcaster_;
 
-    // 输入缓冲（共用一把锁，消除 process_loop 里的嵌套加锁死锁风险）
     std::deque<ImuMeas> imu_buf_;
+    std::deque<YawMeas> yaw_buf_;
     std::deque<LioMeas> lio_buf_;
     std::mutex          buf_mtx_;
     std::condition_variable proc_cv_;
 
-    // 输出缓冲
     std::deque<nav_msgs::msg::Odometry> odom_buf_;
     std::mutex                          odom_mtx_;
     std::condition_variable             odom_cv_;

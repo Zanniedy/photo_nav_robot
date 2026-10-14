@@ -1,0 +1,26 @@
+# 统一启动配置
+# 所有 launch 文件从这里读取默认参数，命令行传参可覆盖
+
+common:
+  use_sim_time: true          # 实机改为 false
+
+robot:
+  lidar_port:     /dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_bc333ee39c31f1119715925f30d20014-if00-port0   # by-id，不随插拔顺序变化
+  lidar_baudrate: 460800
+  odom_source:    ekf         # ekf | raw
+
+sim:
+  world:       hotel_world.sdf
+  models_path: /home/lsy/cs_project/nav/cs/src/rmu_gazebo_simulator/resource/models
+  spawn_x:     "1.5"
+  spawn_y:     "1.5"
+  spawn_z:     "0.15"
+  spawn_yaw:   "0.0"
+  slam:        true           # 有已有地图时改为 false
+
+nav2:
+  map: /home/sunrise/max_robot/maps/map_20261014_032936.yaml   # 实机 2026-10-14 建图；相对于 robot_nav/maps/ 或填绝对路径
+  launch_rviz: true
+
+rviz:
+  config: mapping.rviz            # 相对于 robot_nav/config/

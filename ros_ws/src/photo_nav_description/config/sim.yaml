@@ -1,0 +1,16 @@
+# 仿真配置文件
+# robot_sim.launch.py / ignition.launch.py 从这里读取参数
+
+sim:
+  # 世界文件，相对于 photo_nav_description/worlds/
+  world: hotel_world.sdf
+
+  # IGN_GAZEBO_RESOURCE_PATH 追加路径（模型目录，用于 model:// URI 解析）
+  # 留空则不追加
+  models_path: /home/lsy/cs_project/nav/cs/src/rmu_gazebo_simulator/resource/models
+
+  # 机器人初始位置
+  spawn_x: "1.5"
+  spawn_y: "1.5"
+  spawn_z: "0.15"
+  spawn_yaw: "0.0"

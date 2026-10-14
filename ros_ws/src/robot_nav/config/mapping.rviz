@@ -14,22 +14,35 @@ Visualization Manager:
       Name: Map
       Topic:
         Value: /map
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
       Value: true
     - Class: rviz_default_plugins/LaserScan
       Name: LaserScan
       Topic:
         Value: /scan
+        Filter Size: 10
       Value: true
       Color: 255; 50; 50
       Size (m): 0.03
+      Transform Timeout: 1.0
     - Class: rviz_default_plugins/RobotModel
+      Description Topic:
+        Value: /robot_description
       Name: RobotModel
       Value: true
+    - Class: rviz_default_plugins/Path
+      Name: EKF Path
+      Topic:
+        Value: /lio_ekf_path
+      Value: true
+      Color: 0; 200; 0
+      Line Width: 0.02
     - Class: rviz_default_plugins/TF
       Name: TF
       Value: false
   Global Options:
-    Fixed Frame: map
+    Fixed Frame: lio_odom
     Frame Rate: 30
   Tools:
     - Class: rviz_default_plugins/Interact

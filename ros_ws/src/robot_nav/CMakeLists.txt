@@ -14,6 +14,7 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters)
@@ -58,6 +59,8 @@ ament_target_dependencies(pcd_map_server_node
   rclcpp sensor_msgs pcl_conversions
 )
 
+find_package(TBB REQUIRED)
+
 add_executable(lio_slam_node src/lio/lio_slam_node.cpp)
 target_include_directories(lio_slam_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/lio>
@@ -67,9 +70,10 @@ target_include_directories(lio_slam_node PUBLIC
 target_link_libraries(lio_slam_node
   ${libpointmatcher_LIBRARIES}
   Eigen3::Eigen
+  TBB::tbb
 )
 ament_target_dependencies(lio_slam_node
-  rclcpp sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros
+  rclcpp sensor_msgs nav_msgs std_msgs geometry_msgs tf2 tf2_ros
 )
 
 add_executable(odom_path_node src/odom_path/odom_path_node.cpp)
@@ -90,12 +94,33 @@ ament_target_dependencies(lio_ekf_node
   rclcpp nav_msgs std_msgs geometry_msgs tf2 tf2_ros
 )
 
-install(TARGETS pcd_map_node pcd_map_server_node lio_slam_node odom_path_node lio_ekf_node
+add_executable(sim_imu_bridge_node src/sim_imu_bridge/sim_imu_bridge_node.cpp)
+ament_target_dependencies(sim_imu_bridge_node
+  rclcpp sensor_msgs std_msgs
+)
+
+add_executable(map_localizer_node src/map_localizer/map_localizer_node.cpp)
+target_link_libraries(map_localizer_node Eigen3::Eigen)
+ament_target_dependencies(map_localizer_node
+  rclcpp sensor_msgs nav_msgs std_msgs geometry_msgs tf2 tf2_ros
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_scan_matcher_2d test/test_scan_matcher_2d.cpp)
+  target_link_libraries(test_scan_matcher_2d Eigen3::Eigen)
+endif()
+
+install(TARGETS pcd_map_node pcd_map_server_node lio_slam_node odom_path_node lio_ekf_node sim_imu_bridge_node map_localizer_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS scripts/relocalize_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
-  DIRECTORY launch config maps
+  DIRECTORY launch config maps scripts
   DESTINATION share/${PROJECT_NAME}
 )
 

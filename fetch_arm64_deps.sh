@@ -54,6 +54,8 @@ PACKAGES=(
     ros-humble-rosbridge-msgs
     ros-humble-rosapi
     ros-humble-rosapi-msgs
+    ros-humble-xacro
+    ros-humble-joint-state-publisher
     libyaml-cpp-dev
     libboost-system-dev
 )
