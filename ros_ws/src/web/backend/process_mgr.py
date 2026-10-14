@@ -36,6 +36,9 @@ def _append_log(name: str, line: str) -> None:
         _logs.append((_seq, name, line))
 
 
+log = _append_log   # 供路由写 "ui" 日志
+
+
 def _reader(name: str, proc: subprocess.Popen) -> None:
     for raw in iter(proc.stdout.readline, b""):
         _append_log(name, raw.decode(errors="replace").rstrip())
@@ -89,6 +92,11 @@ def stop(name: str) -> None:
         return
     _append_log(name, "--- 停止中 ---")
     _kill_group(proc)
+
+
+def last_cmd(name: str) -> str | None:
+    with _lock:
+        return _meta.get(name, {}).get("cmd")
 
 
 def stop_all() -> None:

@@ -1,4 +1,7 @@
-// 后端 REST，与网页同源
+// 后端 REST，与网页同源（cookie 登录）
+let onUnauthorized = () => {}
+export function setUnauthorizedHandler(fn) { onUnauthorized = fn }
+
 async function req(method, path, body) {
   const res = await fetch(path, {
     method,
@@ -8,20 +11,31 @@ async function req(method, path, body) {
   const text = await res.text()
   let data
   try { data = JSON.parse(text) } catch { data = text }
+  if (res.status === 401 && !path.startsWith('/api/auth/')) onUnauthorized()
   if (!res.ok) throw new Error(typeof data === 'object' && data.detail ? data.detail : text)
   return data
 }
 
+const q = encodeURIComponent
+
 export const api = {
+  me: () => req('GET', '/api/auth/me'),
+  login: (username, password) => req('POST', '/api/auth/login', { username, password }),
+  logout: () => req('POST', '/api/auth/logout'),
   status: () => req('GET', '/api/status'),
   maps: () => req('GET', '/api/maps'),
   diag: () => req('GET', '/api/diag'),
   procStart: (n) => req('POST', `/api/proc/${n}/start`),
+  procRestart: (n) => req('POST', `/api/proc/${n}/restart`),
   procStop: (n) => req('POST', `/api/proc/${n}/stop`),
   mappingStart: () => req('POST', '/api/mapping/start'),
   mappingSave: (name) => req('POST', '/api/mapping/save', { name }),
-  navStart: (name) => req('POST', '/api/nav/start', { name }),
-  switchMap: (name) => req('POST', '/api/nav/switch_map', { name }),
+  navStart: (map) => req('POST', '/api/nav/start', { map }),
+  switchMap: (map) => req('POST', '/api/nav/switch_map', { map }),
+  setDefaultMap: (map) => req('POST', '/api/maps/default', { map }),
+  saveMapPose: (map, p) => req('POST', '/api/maps/pose', { map, ...p }),
+  clearMapPose: (map) => req('DELETE', `/api/maps/pose?map=${q(map)}`),
+  initialPose: (p, refine) => req('POST', '/api/nav/initialpose', { ...p, refine }),
   waypoints: (poses) => req('POST', '/api/nav/waypoints', { poses }),
   navCancel: () => req('POST', '/api/nav/cancel'),
   stop: () => req('POST', '/api/stop'),

@@ -6,7 +6,11 @@
         <span class="led" :class="p.running ? 'ok' : (p.exit_code != null && p.exit_code !== 0 ? 'bad' : '')" />
         <span class="name">{{ name }}</span>
         <span class="muted">{{ procText(p) }}</span>
-        <button v-if="name === 'rosbridge'" class="sm" @click="run('重启 rosbridge', () => api.procStart('rosbridge'))">重启</button>
+        <template v-if="name !== 'waypoints'">
+          <button class="sm" :disabled="!!store.busy || !canRestart(name, p)" @click="restart(name)"
+                  :title="RESTART_TIP[name]">重启</button>
+          <button v-if="p.running && name !== 'rosbridge'" class="sm" :disabled="!!store.busy" @click="run(`停止 ${name}`, () => api.procStop(name))">停止</button>
+        </template>
       </div>
     </section>
 
@@ -66,6 +70,18 @@ const TOPICS = [
 ]
 
 const procs = computed(() => store.status.processes)
+const RESTART_TIP = {
+  rosbridge: '网页连接会断开几秒后自动重连',
+  base: '底盘/雷达/lio/ekf 全部重启，导航中需要重新给初始位姿',
+  slam: '重启 slam_toolbox，未保存的地图会丢失',
+  nav: '重启 nav2 + 定位（保持当前地图，有保存的初始位姿会自动发送）',
+}
+// nav/slam 需要启动过（有命令和地图）才能重启
+const canRestart = (name, p) => ['rosbridge', 'base'].includes(name) || !!p.cmd
+async function restart(name) {
+  if (name === 'slam' && !confirm('重启建图会丢失未保存的地图，继续？')) return
+  await run(`重启 ${name}`, () => api.procRestart(name))
+}
 const yaw = ref(null), yawSpeed = ref(null), odom = ref(null), cmd = ref(null), score = ref(null)
 const tfOk = ref(false)
 const diagItems = ref([])

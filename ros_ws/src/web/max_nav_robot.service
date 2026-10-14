@@ -1,0 +1,19 @@
+[Unit]
+Description=MAX_NAV_ROBOT web UI (FastAPI + rosbridge + ROS 进程编排)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/max_robot/ros_ws/src/web
+ExecStart=/home/%i/max_robot/ros_ws/src/web/start.sh
+Restart=on-failure
+RestartSec=5
+# 后端收到 SIGTERM 时会依次停掉自己拉起的 ROS 进程组，给足时间
+TimeoutStopSec=30
+KillMode=mixed
+Environment=HOME=/home/%i
+
+[Install]
+WantedBy=multi-user.target

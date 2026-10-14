@@ -1,9 +1,9 @@
 <template>
   <header class="bar">
-    <span class="title">Robot UI</span>
+    <span class="title">MAX_NAV_ROBOT</span>
     <span class="dot" :class="store.backendOk ? 'ok' : 'bad'">后端</span>
     <span class="dot" :class="rosState.connected ? 'ok' : 'bad'" :title="rosState.url">rosbridge</span>
-    <span class="mode" :class="mode">{{ MODE_LABEL[mode] }}<template v-if="store.status.map"> · {{ store.status.map }}</template></span>
+    <span class="mode" :class="mode">{{ MODE_LABEL[mode] }}<template v-if="store.status.map"> · {{ mapName(store.status.map) }}</template></span>
 
     <div class="spacer" />
 
@@ -12,7 +12,7 @@
     <button @click="startMapping" :disabled="!!store.busy" :class="{ on: mode === 'mapping' }">建图</button>
     <select v-model="navMap" :disabled="!!store.busy" title="选择地图">
       <option value="" disabled>选择地图…</option>
-      <option v-for="m in store.maps" :key="m.name" :value="m.name">{{ m.name }}</option>
+      <option v-for="m in store.maps" :key="m.id" :value="m.id" :title="m.id">{{ m.default ? '★ ' : '' }}{{ m.name }}</option>
     </select>
     <button @click="startNav" :disabled="!!store.busy || !navMap" :class="{ on: mode === 'navigation' }">
       {{ mode === 'navigation' ? '切换地图' : '导航' }}
@@ -20,6 +20,7 @@
     <button v-if="mode === 'mapping' || mode === 'navigation'" @click="run('退出模式', api.stop)" :disabled="!!store.busy">退出{{ MODE_LABEL[mode] }}</button>
     <button class="danger" @click="stopAll" :disabled="!!store.busy" title="停掉底盘/建图/导航（保留 rosbridge）">全部停止</button>
     <span v-if="store.busy" class="busy">{{ store.busy }}…</span>
+    <button v-if="store.auth.enabled" class="sm" @click="logout" title="退出登录">登出</button>
   </header>
 </template>
 
@@ -27,7 +28,7 @@
 import { ref, computed, watch } from 'vue'
 import { api } from '../lib/api.js'
 import { rosState } from '../lib/ros.js'
-import { store, run, refreshMaps, toast } from '../lib/store.js'
+import { store, run, refreshMaps, toast, mapName, checkAuth } from '../lib/store.js'
 
 const MODE_LABEL = { idle: '待机', base: '底盘运行', mapping: '建图', navigation: '导航' }
 const mode = computed(() => store.status.mode)
@@ -35,7 +36,10 @@ const procs = computed(() => store.status.processes)
 const navMap = ref('')
 
 watch(() => store.status.map, (m) => { if (m) navMap.value = m }, { immediate: true })
-watch(() => store.maps, (ms) => { if (!navMap.value && ms.length) navMap.value = ms[0].name })
+watch(() => store.maps, (ms) => {
+  if (navMap.value && ms.some((m) => m.id === navMap.value)) return
+  navMap.value = (ms.find((m) => m.default) || ms[0])?.id || ''
+})
 
 async function startMapping() {
   if (mode.value === 'mapping') return
@@ -52,13 +56,19 @@ async function startNav() {
   if (r) {
     store.goal = null
     store.waypoints = []
-    toast(`地图 ${navMap.value} 已加载，用「初始位姿」工具标定机器人位置`)
+    const m = store.maps.find((x) => x.id === navMap.value)
+    toast(m?.pose ? `地图 ${m.name} 已加载，将自动发送已保存的初始位姿` : `地图 ${mapName(navMap.value)} 已加载，用「初始位姿」工具标定机器人位置`)
   }
 }
 
 async function stopAll() {
   if (!confirm('停止底盘、建图、导航所有进程？')) return
   await run('全部停止', api.stopAll)
+}
+
+async function logout() {
+  try { await api.logout() } catch { /* 无所谓 */ }
+  await checkAuth()
 }
 
 refreshMaps()

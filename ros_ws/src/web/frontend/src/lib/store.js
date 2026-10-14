@@ -1,6 +1,6 @@
 // 全局共享状态：后端进程状态轮询、视图/工具选择、航点、导航状态
 import { reactive } from 'vue'
-import { api } from './api.js'
+import { api, setUnauthorizedHandler } from './api.js'
 import { subscribe } from './ros.js'
 
 const LAYERS_KEY = 'robot-ui-layers'
@@ -10,6 +10,7 @@ function loadLayers() {
 }
 
 export const store = reactive({
+  auth: { checked: false, enabled: true, ok: false },
   status: { mode: 'idle', map: null, processes: {} },
   backendOk: false,
   maps: [],
@@ -52,6 +53,7 @@ export async function run(label, fn) {
 }
 
 export async function refreshStatus() {
+  if (!store.auth.ok) return
   try {
     store.status = await api.status()
     store.backendOk = true
@@ -61,12 +63,31 @@ export async function refreshStatus() {
 }
 
 export async function refreshMaps() {
+  if (!store.auth.ok) return
   try { store.maps = await api.maps() } catch { /* 状态栏会显示后端断开 */ }
 }
 
-refreshStatus()
-refreshMaps()
+setUnauthorizedHandler(() => { store.auth.ok = false })
+
+export async function checkAuth() {
+  try {
+    const r = await api.me()
+    Object.assign(store.auth, { checked: true, enabled: r.enabled, ok: r.ok })
+  } catch {
+    Object.assign(store.auth, { checked: true, ok: false })
+  }
+  if (store.auth.ok) { refreshStatus(); refreshMaps() }
+  return store.auth.ok
+}
+
 setInterval(refreshStatus, 1500)
+
+/** 地图 id（yaml 路径）→ 显示名 */
+export function mapName(id) {
+  if (!id) return ''
+  const m = store.maps.find((x) => x.id === id)
+  return m ? m.name : id.split('/').pop().replace(/\.ya?ml$/, '')
+}
 
 // GoalStatus: 1 accepted 2 executing 3 canceling 4 succeeded 5 canceled 6 aborted
 function lastStatus(msg) {

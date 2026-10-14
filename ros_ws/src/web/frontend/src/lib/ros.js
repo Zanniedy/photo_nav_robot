@@ -3,9 +3,11 @@ import { reactive } from 'vue'
 
 const ROSLIB = window.ROSLIB
 
-// ?ros=host:port 可覆盖，默认和网页同主机 9090
+// 默认走后端 /ros 代理（带登录 cookie）；?ros=host:port 可直连 rosbridge（需对方监听外网）
 const params = new URLSearchParams(location.search)
-const url = `ws://${params.get('ros') || `${location.hostname}:9090`}`
+const url = params.get('ros')
+  ? `ws://${params.get('ros')}`
+  : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ros`
 
 export const rosState = reactive({ connected: false, url, rates: {} })
 
@@ -36,7 +38,13 @@ function connect() {
     setTimeout(connect, 2000)
   })
 }
-connect()
+// 登录后由 App 调用；只连一次，之后断线自动重连
+let started = false
+export function startRos() {
+  if (started) return
+  started = true
+  connect()
+}
 
 // 每秒统计一次频率
 let lastTick = performance.now()

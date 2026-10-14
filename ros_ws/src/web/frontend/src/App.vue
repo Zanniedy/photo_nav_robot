@@ -1,5 +1,6 @@
 <template>
-  <div class="app">
+  <Login v-if="store.auth.checked && !store.auth.ok" />
+  <div v-else-if="store.auth.ok" class="app">
     <TopBar />
     <div class="main">
       <MapView />
@@ -17,19 +18,24 @@
         </div>
       </aside>
     </div>
-    <div v-if="store.toast" class="toast" :class="store.toast.kind" @click="store.toast = null">{{ store.toast.text }}</div>
   </div>
+  <div v-if="store.toast" class="toast" :class="store.toast.kind" @click="store.toast = null">{{ store.toast.text }}</div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
+import Login from './components/Login.vue'
 import TopBar from './components/TopBar.vue'
 import MapView from './components/MapView.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 import CommandPanel from './components/CommandPanel.vue'
 import LogPanel from './components/LogPanel.vue'
-import { store } from './lib/store.js'
+import { store, checkAuth } from './lib/store.js'
+import { startRos } from './lib/ros.js'
+
+checkAuth()
+watch(() => store.auth.ok, (ok) => { if (ok) startRos() })
 
 const TABS = [
   { id: 'control', label: '控制' },

@@ -1,26 +1,42 @@
-"""进程编排：底盘 / 建图 / 导航模式切换、地图、航点、日志流"""
-import asyncio, json, math, shlex, time
+"""进程编排：底盘 / 建图 / 导航模式切换、地图、初始位姿、航点、日志流"""
+import asyncio, json, math, shlex, threading, time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import maps, process_mgr
+import maps, process_mgr, state
 from config import PROCESSES
 
 router = APIRouter(prefix="/api")
 
 # 前端展示顺序；waypoints 是 FollowWaypoints action 客户端进程
 PROC_NAMES = ["rosbridge", "base", "slam", "nav", "waypoints"]
-_state = {"map": None}
+_state = {"map": None}       # 当前导航地图 id（yaml 绝对路径）
 
 
 class MapReq(BaseModel):
+    map: str                 # 地图 id（yaml 路径）或地图名
+
+
+class SaveReq(BaseModel):
     name: str
+
+
+class DefaultReq(BaseModel):
+    map: str | None = None   # None = 取消默认地图
 
 
 class Pose2D(BaseModel):
     x: float
     y: float
     yaw: float = 0.0
+
+
+class MapPoseReq(Pose2D):
+    map: str
+
+
+class InitPoseReq(Pose2D):
+    refine: bool = False     # True → /initialpose_rough 经 relocalize_node 精配
 
 
 class WaypointsReq(BaseModel):
@@ -42,18 +58,78 @@ def _ensure_base() -> None:
         process_mgr.start("base", PROCESSES["base"])
 
 
-def _map_or_404(name: str) -> str:
-    path = maps.yaml_path(name)
-    if path is None:
-        raise HTTPException(404, f"地图不存在: {name}")
-    return path
+def _map_or_404(map_id: str) -> dict:
+    m = maps.resolve(map_id)
+    if m is None:
+        raise HTTPException(404, f"地图不存在: {map_id}")
+    return m
+
+
+def _quat(yaw: float) -> dict:
+    return {"x": 0.0, "y": 0.0, "z": math.sin(yaw / 2), "w": math.cos(yaw / 2)}
+
+
+def publish_initialpose(x: float, y: float, yaw: float, refine: bool = False, wait: float = 3) -> dict:
+    """经 ros2 topic pub 发初始位姿；wait>0 时等到有订阅者（定位节点起来）再发"""
+    topic = "/initialpose_rough" if refine else "/initialpose"
+    cov = [0.0] * 36
+    cov[0] = cov[7] = 0.25
+    cov[35] = 0.0685
+    msg = {"header": {"frame_id": "map"},
+           "pose": {"pose": {"position": {"x": x, "y": y, "z": 0.0}, "orientation": _quat(yaw)},
+                    "covariance": cov}}
+    r = process_mgr.run_once(
+        ["ros2", "topic", "pub", "--once", "-w", "1", topic,
+         "geometry_msgs/msg/PoseWithCovarianceStamped", json.dumps(msg)], timeout=wait + 5)
+    ok = not r["timed_out"] and r["rc"] == 0
+    process_mgr.log("ui", f"初始位姿 {topic} ({x:.2f}, {y:.2f}, {math.degrees(yaw):.0f}°) "
+                                  + ("已发送" if ok else "发送失败"))
+    return {"ok": ok, "topic": topic, "output": r["output"][-500:]}
+
+
+def _apply_saved_pose_async(map_id: str) -> None:
+    """导航启动/换图后，若该地图存了初始位姿，等定位节点起来后自动发一次"""
+    pose = state.load()["poses"].get(map_id)
+    if not pose:
+        return
+
+    def job():
+        # 等 nav launch 起定位节点；-w 1 会一直等到有订阅者为止（上限 60s）
+        time.sleep(2)
+        if _state["map"] == map_id and process_mgr.is_running("nav"):
+            publish_initialpose(pose["x"], pose["y"], pose["yaw"], wait=60)
+    threading.Thread(target=job, daemon=True).start()
+
+
+def start_nav(m: dict) -> None:
+    process_mgr.stop("waypoints")
+    process_mgr.stop("slam")
+    _ensure_base()
+    process_mgr.start("nav", PROCESSES["nav"].replace("{map}", shlex.quote(m["id"])))
+    _state["map"] = m["id"]
+    _apply_saved_pose_async(m["id"])
+
+
+def autostart_default_map() -> None:
+    """后端启动时调用：配置了默认地图就直接进导航"""
+    mid = state.load()["default_map"]
+    if not mid:
+        return
+    m = maps.resolve(mid)
+    if m is None:
+        process_mgr.log("ui", f"默认地图不存在，跳过自动导航: {mid}")
+        return
+    process_mgr.log("ui", f"自动以默认地图 {m['name']} 启动导航")
+    start_nav(m)
 
 
 @router.get("/status")
 def status():
+    nav = process_mgr.is_running("nav")
     return {
         "mode": _mode(),
-        "map": _state["map"] if process_mgr.is_running("nav") else None,
+        "map": _state["map"] if nav else None,
+        "default_map": state.load()["default_map"],
         "processes": {n: process_mgr.info(n) for n in PROC_NAMES},
         "time": time.time(),
     }
@@ -64,6 +140,20 @@ def proc_start(name: str):
     if name not in ("rosbridge", "base"):
         raise HTTPException(400, "只能单独启动 rosbridge / base，建图导航用对应接口")
     process_mgr.start(name, PROCESSES[name])
+    return {"ok": True}
+
+
+@router.post("/proc/{name}/restart")
+def proc_restart(name: str):
+    """按上次的启动命令重启（nav 保留当前地图）。base 重启后上层的定位需要重新给初始位姿"""
+    if name not in PROC_NAMES or name == "waypoints":
+        raise HTTPException(400, f"不能重启 {name}")
+    cmd = process_mgr.last_cmd(name) or (PROCESSES[name] if name in ("rosbridge", "base", "slam") else None)
+    if cmd is None:
+        raise HTTPException(409, f"{name} 还没启动过")
+    process_mgr.start(name, cmd)
+    if name == "nav" and _state["map"]:
+        _apply_saved_pose_async(_state["map"])
     return {"ok": True}
 
 
@@ -85,7 +175,7 @@ def mapping_start():
 
 
 @router.post("/mapping/save")
-def mapping_save(req: MapReq):
+def mapping_save(req: SaveReq):
     if not maps.valid_name(req.name):
         raise HTTPException(400, "地图名只能包含字母数字 _ - .")
     if not process_mgr.is_running("slam"):
@@ -105,28 +195,35 @@ def mapping_save(req: MapReq):
 
 @router.post("/nav/start")
 def nav_start(req: MapReq):
-    path = _map_or_404(req.name)
-    process_mgr.stop("waypoints")
-    process_mgr.stop("slam")
-    _ensure_base()
-    process_mgr.start("nav", PROCESSES["nav"].replace("{map}", shlex.quote(path)))
-    _state["map"] = req.name
+    start_nav(_map_or_404(req.map))
     return {"ok": True}
 
 
 @router.post("/nav/switch_map")
 def nav_switch_map(req: MapReq):
     """导航中热切换地图（map_server load_map），不在导航就直接以该地图启动导航"""
-    path = _map_or_404(req.name)
+    m = _map_or_404(req.map)
     if not process_mgr.is_running("nav"):
         return nav_start(req)
     r = process_mgr.run_once(
         ["ros2", "service", "call", "/map_server/load_map", "nav2_msgs/srv/LoadMap",
-         json.dumps({"map_url": path})], timeout=15)
+         json.dumps({"map_url": m["id"]})], timeout=15)
     if "result=0" not in r["output"]:
         raise HTTPException(500, "load_map 失败:\n" + r["output"][-800:])
-    _state["map"] = req.name
+    process_mgr.stop("waypoints")
+    _state["map"] = m["id"]
+    _apply_saved_pose_async(m["id"])
     return {"ok": True}
+
+
+@router.post("/nav/initialpose")
+def nav_initialpose(req: InitPoseReq):
+    if not process_mgr.is_running("nav"):
+        raise HTTPException(409, "导航未启动")
+    r = publish_initialpose(req.x, req.y, req.yaw, req.refine)
+    if not r["ok"]:
+        raise HTTPException(500, f"发送 {r['topic']} 失败（定位节点没起来？）\n{r['output']}")
+    return r
 
 
 @router.post("/nav/waypoints")
@@ -137,9 +234,7 @@ def nav_waypoints(req: WaypointsReq):
         raise HTTPException(400, "航点为空")
     goal = {"poses": [{
         "header": {"frame_id": "map"},
-        "pose": {"position": {"x": p.x, "y": p.y, "z": 0.0},
-                 "orientation": {"x": 0.0, "y": 0.0,
-                                 "z": math.sin(p.yaw / 2), "w": math.cos(p.yaw / 2)}},
+        "pose": {"position": {"x": p.x, "y": p.y, "z": 0.0}, "orientation": _quat(p.yaw)},
     } for p in req.poses]}
     process_mgr.start("waypoints",
         "ros2 action send_goal /follow_waypoints nav2_msgs/action/FollowWaypoints "
@@ -176,7 +271,30 @@ def stop_all():
 
 @router.get("/maps")
 def list_maps():
-    return [{"name": m["name"], "mtime": m["mtime"]} for m in maps.list_maps()]
+    st = state.load()
+    return [{**m, "default": m["id"] == st["default_map"], "pose": st["poses"].get(m["id"])}
+            for m in maps.list_maps()]
+
+
+@router.post("/maps/default")
+def set_default_map(req: DefaultReq):
+    mid = _map_or_404(req.map)["id"] if req.map else None
+    state.update(lambda d: d.__setitem__("default_map", mid))
+    return {"ok": True, "default_map": mid}
+
+
+@router.post("/maps/pose")
+def save_map_pose(req: MapPoseReq):
+    mid = _map_or_404(req.map)["id"]
+    state.update(lambda d: d["poses"].__setitem__(mid, {"x": req.x, "y": req.y, "yaw": req.yaw}))
+    return {"ok": True}
+
+
+@router.delete("/maps/pose")
+def clear_map_pose(map: str):
+    mid = _map_or_404(map)["id"]
+    state.update(lambda d: d["poses"].pop(mid, None))
+    return {"ok": True}
 
 
 @router.get("/logs")
