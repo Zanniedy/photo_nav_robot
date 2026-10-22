@@ -82,6 +82,20 @@
 - Win 端用什么语言、要不要写客户端示例（用户说先不写）
 - 已有可复用的：`GET/POST/PATCH/DELETE /api/points`、`POST /api/points_goto`、`GET /api/status`、`POST /api/nav/cancel`；ROS 侧 `/points/{list,get,set,delete,goto}`。缺导航结果/进度回传（现在 points_goto 发出就返回）、急停、统一的错误码
 
+## 2026-10-22：BPU 模型 v2 + 人员跟踪 / 走到人面前
+
+- 模型：用网页连拍的 122 张照片重新校准（`~/rdk_x5_mapper/yolo26/model_output/`，第一版留在 `model_output_v1_chessboard/`）。板上对比浮点 ONNX：召回 92/97，多检 1（v1 多检 132），框中心偏差均值 3.4px。**这一版只是把流程调通，正式版要到实际工作环境里拍照重新校准**
+- 速度：整模型 117ms，其中 BPU 24ms，两个注意力 Softmax 跑在 CPU 上加前后量化约 75ms。`config_v3.yaml` 想把 Softmax 放到 BPU 上算（int16），`node_info` 写在 `calibration_parameters` 下报 Wrong key，已经挪到 `model_parameters` 下，**还没跑**
+- 相机外参：相机在雷达正上方 0.72m，`base_link→camera_link` 改为 `0.25 0 0.62`（robot/rviz launch）。相机和雷达的相对 yaw 默认 0，没标定过
+- 新节点 `person_locator/person_tracker_node.py`（`ros2 run person_locator person_tracker`，参数 `config/person_tracker.yaml`）
+  - 相机检测框给方位 → 激光在这个扇形里取低分位距离 → 得到人在 map 下的位置 → 卡尔曼跟踪。远处相机检测不到时靠激光簇继续跟
+  - action `/person/approach`（`robot_interfaces/action/ApproachPerson`）：锁定最近的人，导航到「机器人→人」连线上离人 3m 处、车头朝人。目标丢了就换成最近的人
+  - 参数 `face_front`：true 时锁定后用前 3 次检测平均出人的位置（红点）并记住，到导航结束都按这个位置走；false 时人移动超过 0.5m 就更新目标
+  - Python 调用：`person_locator.approach_client.approach_person(node, 3.0)`；命令行：`ros2 run person_locator approach_person --distance 3`
+  - 网页：控制面板「人员跟随」（开关 face_front、距离、开始/取消、轨迹列表、检测耗时），地图图层「人员跟踪」（橙圈=轨迹，绿圈=目标，红点=记住的位置，粉箭头=导航目标）。后端加了进程 `person`
+  - 纯逻辑单测：`cd ros_ws/src/person_locator && PYTHONPATH=. /usr/bin/python3 -m pytest test/`（23 个）
+- **没有实测**：有人在场时的定位精度、approach 能不能走完。相机内参 fx=2770 还是可疑，fx 不对的话方位就不准，激光扇形可能取不到人
+
 ## 2026-10-21：网页相机窗口 + 真机在线标定
 
 目标：做相机真机标定（人员定位第 1 步）。机器人上没有显示器，所以把标定流程搬进网页，在相机浮窗里操作。
