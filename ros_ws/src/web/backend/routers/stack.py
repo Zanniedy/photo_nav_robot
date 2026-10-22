@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api")
 # 前端展示顺序；waypoints 是 FollowWaypoints action 客户端进程
 PROC_NAMES = ["rosbridge", "base", "slam", "nav", "waypoints", "points", "camera", "calib"]
 # 可以单独启动 / 按配置命令重启的进程（nav/slam/waypoints 走各自接口）
-STANDALONE = ("rosbridge", "base", "points", "camera", "calib")
+STANDALONE = ("rosbridge", "base", "points", "camera", "calib", "person")
 _state = {"map": None}       # 当前导航地图 id（yaml 绝对路径）
 
 

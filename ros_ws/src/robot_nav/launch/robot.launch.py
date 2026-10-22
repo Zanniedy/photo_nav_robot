@@ -66,7 +66,8 @@ def generate_launch_description():
     # 雷达 x 轴朝车体左侧：2026-10-14 实测 Vy+(前进) 时 scan 匹配位移在雷达系 -y 方向，故 yaw=+90°
     # （old-style 参数顺序 x y z yaw pitch roll）
     tf_laser       = static_tf('laser',       'base_link',      'laser',                '0.25 0 -0.1', '1.5708 0 0')
-    tf_camera      = static_tf('camera',      'base_link',      'camera_link',          '0.25 0 0.6')
+    # 相机在雷达正上方 0.72m（2026-10-22 实测），朝向和车体一致；雷达 z=-0.1 → 相机 z=0.62
+    tf_camera      = static_tf('camera',      'base_link',      'camera_link',          '0.25 0 0.62')
     tf_cam_optical = static_tf('cam_optical', 'camera_link',    'camera_optical_frame', '0 0 0', '-1.5708 0 -1.5708')
     tf_imu         = static_tf('imu',         'base_link',      'imu_link',             '0 0 0')
 

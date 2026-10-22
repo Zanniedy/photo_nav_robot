@@ -36,7 +36,7 @@ def generate_launch_description():
 
     tf_base        = _stf('base',        'base_footprint', 'base_link',            '0 0 0.9')
     tf_laser       = _stf('laser',       'base_link',      'laser',                '0.25 0 -0.1')
-    tf_camera      = _stf('camera',      'base_link',      'camera_link',          '0.25 0 0.6')
+    tf_camera      = _stf('camera',      'base_link',      'camera_link',          '0.25 0 0.62')
     tf_cam_optical = _stf('cam_optical', 'camera_link',    'camera_optical_frame', '0 0 0', '-1.5708 0 -1.5708')
     tf_imu         = _stf('imu',         'base_link',      'imu_link',             '0 0 0')
 

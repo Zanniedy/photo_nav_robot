@@ -78,9 +78,10 @@ const RESTART_TIP = {
   points: '重启点位 ROS 服务 /points/*',
   camera: '重启相机节点',
   calib: '重启标定节点，已采集的帧会丢失',
+  person: '重启人员跟踪节点（正在执行的 approach 会中断）',
 }
 // nav/slam 需要启动过（有命令和地图）才能重启
-const canRestart = (name, p) => ['rosbridge', 'base', 'points', 'camera', 'calib'].includes(name) || !!p.cmd
+const canRestart = (name, p) => ['rosbridge', 'base', 'points', 'camera', 'calib', 'person'].includes(name) || !!p.cmd
 async function restart(name) {
   if (name === 'slam' && !confirm('重启建图会丢失未保存的地图，继续？')) return
   await run(`重启 ${name}`, () => api.procRestart(name))

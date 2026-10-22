@@ -8,7 +8,7 @@ import numpy as np
 
 
 def wrap(a):
-    """角度归一化到 (-pi, pi]"""
+    """角度归一化到 [-pi, pi)"""
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 

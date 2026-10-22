@@ -1,0 +1,27 @@
+# 人员跟踪 + 走到人面前（person_tracker_node.py）
+person_tracker:
+  ros__parameters:
+    model_path: ~/max_robot/models/yolo26s_seg_bpu.bin   # 同目录要有 yolo26s_seg_bpu_outputs.json
+    conf: 0.4                  # person 框的分数阈值
+    max_det_rate: 10.0         # 检测频率上限 Hz（实际受 BPU 速度限制）
+    track_frame: map           # 只建图/没有 map 时可以改成 lio_odom
+    base_frame: base_footprint
+
+    # 激光取距离
+    window_shrink: 0.6         # 扇形宽度 = 框宽 × 这个系数（框边上多是背景）
+    body_radius: 0.12          # 激光打到人前表面，质心往后推这么多
+    cluster_jump: 0.15         # 相邻激光点超过这个距离就断成两簇 m
+    person_min_width: 0.1      # 人在雷达高度（约 0.8m，腰部）的截面宽度范围 m
+    person_max_width: 1.0
+
+    # 跟踪
+    lost_timeout: 2.0          # 多久没有任何更新算丢失 s
+    cam_confirm_timeout: 3.0   # 人在相机视野内、cam_confirm_range 以内，相机这么久没看到就算丢失
+    cam_confirm_range: 5.0     # 更远的地方检测框不可靠，只靠激光跟
+
+    # 走到人面前（/person/approach）
+    approach_distance: 3.0     # 停在离人多远 m（goal 里 distance<=0 时用）
+    search_timeout: 5.0        # 开始时等多久看到人 s
+    replan_dist: 0.5           # face_front=false：人移动超过这个距离就更新导航目标 m
+    face_front: false          # true：锁定后按检测框粗匹配出人的位置，记下人面前的目标位姿，直到导航结束不再更新
+    mark_frames: 3             # face_front=true 时用几次相机观测做平均

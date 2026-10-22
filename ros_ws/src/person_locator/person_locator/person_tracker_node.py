@@ -9,6 +9,10 @@
 发布:
     /person/markers   visualization_msgs/MarkerArray  所有轨迹（目标为绿色）、标记点、导航目标
     /person/target    geometry_msgs/PoseStamped       当前锁定目标的位置
+    /person/state     std_msgs/String                 JSON 调试状态（网页用）：轨迹、记住的位置（红点）、目标点、动作状态
+服务（网页调试用，std_srvs/Trigger）:
+    /person/approach_start   按当前参数（approach_distance、face_front）开始一次 approach
+    /person/approach_cancel  取消正在执行的 approach
 Action:
     /person/approach  robot_interfaces/action/ApproachPerson
         锁定最近的人 → 导航到离人 distance 米处、车头朝人
@@ -22,6 +26,7 @@ Action:
     ros2 run person_locator person_tracker --ros-args --params-file config/person_tracker.yaml
     ros2 action send_goal /person/approach robot_interfaces/action/ApproachPerson "{distance: 3.0}" --feedback
 """
+import json
 import math
 import os
 import threading
@@ -41,6 +46,8 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, CompressedImage, LaserScan
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -72,8 +79,8 @@ class PersonTracker(Node):
         self.min_width = p('person_min_width', 0.1).value
         self.max_width = p('person_max_width', 1.0).value
         self.cam_confirm_range = p('cam_confirm_range', 5.0).value   # 这个距离内相机应该能检测到人
-        self.approach_distance = p('approach_distance', 3.0).value
-        self.search_timeout = p('search_timeout', 5.0).value
+        p('approach_distance', 3.0)                             # 这两个每次 action 开始时读
+        p('search_timeout', 5.0)
         self.replan_dist = p('replan_dist', 0.5).value
         self.mark_frames = p('mark_frames', 3).value
         self.declare_parameter('face_front', False)              # 每次 action 开始时读，可以运行中 param set
@@ -90,8 +97,11 @@ class PersonTracker(Node):
         self.img_event = threading.Event()
         self.scan = None            # (t, pts_track, labels)
         self.cam_view = None        # (origin_xy, axis_bearing, half_fov)：判断「相机应该看得到」
-        self.mark = None            # face_front 模式下记下的 (人 xy, 目标 (x,y,yaw))
+        # 记住的人位置（红点）：导航目标就是按它算的。动作结束后保留（active=False），方便网页上对比
+        self.mark = None            # {'xy': (x,y), 'frames': n, 'face_front': bool, 'active': bool}
         self.nav_goal = None        # 当前导航目标 (x,y,yaw)，显示用
+        self.approach = {'state': 'idle', 'target_id': -1, 'distance': -1.0, 'message': ''}
+        self.det_stat = {'n': 0, 'ms': 0.0, 'hz': 0.0, 'with_range': 0}
 
         self.create_subscription(CameraInfo, '/camera/camera_info', self.on_info, SENSOR_QOS, callback_group=self.cb)
         self.create_subscription(CompressedImage, '/camera/image_raw/compressed', self.on_image, SENSOR_QOS,
@@ -99,6 +109,7 @@ class PersonTracker(Node):
         self.create_subscription(LaserScan, '/scan', self.on_scan, SENSOR_QOS, callback_group=self.cb)
         self.pub_markers = self.create_publisher(MarkerArray, '/person/markers', 10)
         self.pub_target = self.create_publisher(PoseStamped, '/person/target', 10)
+        self.pub_state = self.create_publisher(String, '/person/state', 10)
         self.create_timer(0.2, self.publish_vis, callback_group=self.cb)
 
         self.nav = ActionClient(self, NavigateToPose, '/navigate_to_pose', callback_group=self.cb)
@@ -106,6 +117,10 @@ class PersonTracker(Node):
         ActionServer(self, ApproachPerson, '/person/approach', self.execute,
                      goal_callback=self.on_goal, cancel_callback=lambda _g: CancelResponse.ACCEPT,
                      callback_group=self.cb)
+        self.self_client = ActionClient(self, ApproachPerson, '/person/approach', callback_group=self.cb)
+        self.self_handle = None
+        self.create_service(Trigger, '/person/approach_start', self.srv_start, callback_group=self.cb)
+        self.create_service(Trigger, '/person/approach_cancel', self.srv_cancel, callback_group=self.cb)
 
         from .detector import BpuPersonDetector
         self.detector = BpuPersonDetector(self.model_path, conf=self.conf)
@@ -192,7 +207,9 @@ class PersonTracker(Node):
                            cv2.IMREAD_REDUCED_COLOR_2 if reduce else cv2.IMREAD_COLOR)
         if bgr is None:
             return
+        t_det = time.time()
         dets = self.detector(bgr)
+        ms = (time.time() - t_det) * 1e3
         dets[:, :4] *= info.width / bgr.shape[1]
 
         T = self.lookup(msg.header.frame_id, msg.header.stamp)
@@ -219,6 +236,10 @@ class PersonTracker(Node):
                                       self.body_radius, min_width=self.min_width, max_width=self.max_width)
                 if m is not None:
                     zs.append(m[0])
+        st = self.det_stat
+        dt = time.time() - st.get('t', time.time() - 1)
+        st.update(n=len(dets), with_range=len(zs), ms=0.8 * st['ms'] + 0.2 * ms,
+                  hz=0.8 * st['hz'] + 0.2 / max(dt, 1e-3), t=time.time())
         with self.lock:
             if zs:
                 self.tracker.update_camera(now, zs)
@@ -231,6 +252,30 @@ class PersonTracker(Node):
             return GoalResponse.REJECT
         self.busy = True
         return GoalResponse.ACCEPT
+
+    def srv_start(self, _req, res):
+        if self.busy:
+            res.success, res.message = False, '已有 approach 在执行'
+            return res
+        done = threading.Event()
+        fut = self.self_client.send_goal_async(ApproachPerson.Goal())
+        fut.add_done_callback(lambda _f: done.set())
+        if not done.wait(3.0) or not fut.result().accepted:
+            res.success, res.message = False, '发送失败'
+            return res
+        self.self_handle = fut.result()
+        res.success = True
+        res.message = (f'开始: 距离 {self.get_parameter("approach_distance").value:.1f}m，'
+                       f'face_front={self.get_parameter("face_front").value}')
+        return res
+
+    def srv_cancel(self, _req, res):
+        if not self.busy or self.self_handle is None:
+            res.success, res.message = (False, '没有在执行（命令行发起的请用 Ctrl-C 取消）') if self.busy else (False, '没有在执行')
+            return res
+        self.self_handle.cancel_goal_async()
+        res.success, res.message = True, '已请求取消'
+        return res
 
     def _facing(self, person_xy, robot_xy):
         """人面朝的方向（单位向量）。现在只有人体框，假设被识别时人面朝机器人"""
@@ -262,16 +307,27 @@ class PersonTracker(Node):
         finally:
             with self.lock:
                 self.tracker.release()
-            self.mark, self.nav_goal, self.busy = None, None, False
+            if self.mark is not None:
+                self.mark['active'] = False
+            self.nav_goal, self.self_handle, self.busy = None, None, False
+
+    def _canceled(self, gh, res):
+        gh.canceled()
+        res.message = '已取消'
+        self.approach.update(state='canceled', message='已取消')
+        self.get_logger().info('approach 已取消')
+        return res
 
     def _execute(self, gh):
         req = gh.request
-        dist = req.distance if req.distance > 0 else self.approach_distance
-        search_to = req.search_timeout if req.search_timeout > 0 else self.search_timeout
+        dist = req.distance if req.distance > 0 else self.get_parameter('approach_distance').value
+        search_to = req.search_timeout if req.search_timeout > 0 else self.get_parameter('search_timeout').value
         face_front = self.get_parameter('face_front').value
         t0 = time.time()
         res = ApproachPerson.Result()
         fb = ApproachPerson.Feedback()
+        self.mark = None
+        self.approach = {'state': 'searching', 'target_id': -1, 'distance': -1.0, 'message': ''}
 
         def finish(ok, text, tr=None, robot=None):
             res.success, res.message = ok, text
@@ -279,6 +335,8 @@ class PersonTracker(Node):
                 res.person = self._pose(tr.xy[0], tr.xy[1], 0.0)
                 if robot is not None:
                     res.distance = float(np.hypot(*(tr.xy - robot)))
+            self.approach.update(state='succeeded' if ok else 'failed', message=text,
+                                 distance=float(res.distance) if tr is not None and robot is not None else -1.0)
             self.get_logger().info(f'approach 结束: {text}')
             (gh.succeed if ok else gh.abort)()
             return res
@@ -290,6 +348,8 @@ class PersonTracker(Node):
                 fb.person = self._pose(tr.xy[0], tr.xy[1], 0.0)
                 fb.distance = float(np.hypot(*(tr.xy - robot))) if robot is not None else -1.0
             gh.publish_feedback(fb)
+            self.approach.update(state=state, target_id=fb.target_id, distance=float(fb.distance) if tr is not None else -1.0,
+                                 message='')
 
         if not self.nav.wait_for_server(timeout_sec=3.0):
             return finish(False, 'nav2 不在线（/navigate_to_pose）')
@@ -298,9 +358,7 @@ class PersonTracker(Node):
         tr = robot = None
         while tr is None:
             if gh.is_cancel_requested:
-                gh.canceled()
-                res.message = '已取消'
-                return res
+                return self._canceled(gh, res)
             if time.time() - t0 > search_to:
                 return finish(False, f'{search_to:.0f}s 内没看到人')
             robot = self.robot_xy()
@@ -316,9 +374,7 @@ class PersonTracker(Node):
             xs, last_cam = [], -1.0
             while len(xs) < self.mark_frames:
                 if gh.is_cancel_requested:
-                    gh.canceled()
-                    res.message = '已取消'
-                    return res
+                    return self._canceled(gh, res)
                 if time.time() - t0 > search_to + 3.0:
                     break
                 with self.lock:
@@ -337,13 +393,15 @@ class PersonTracker(Node):
             yaw = math.atan2(person[1] - g_xy[1], person[0] - g_xy[0])
             if float(np.hypot(*(person - robot))) <= dist:      # 已经够近了：不后退，原地转向人
                 g_xy, yaw = robot, math.atan2(person[1] - robot[1], person[0] - robot[0])
-            self.mark = (person, (float(g_xy[0]), float(g_xy[1]), yaw))
-            goal, goal_person = self.mark[1], person
+            goal, goal_person = (float(g_xy[0]), float(g_xy[1]), yaw), person
+            self.mark = {'xy': (float(person[0]), float(person[1])), 'frames': len(xs), 'face_front': True, 'active': True}
             self.get_logger().info(f'标记人位置 ({person[0]:.2f},{person[1]:.2f})（{len(xs)} 帧），'
                                    f'目标 ({goal[0]:.2f},{goal[1]:.2f})，记住到导航结束')
         else:
             goal_person = tr.xy
             goal = approach_goal(goal_person, robot, dist)
+            self.mark = {'xy': (float(goal_person[0]), float(goal_person[1])), 'frames': 1, 'face_front': False,
+                         'active': True}
 
         # 3. 导航，跟踪模式下人移动就更新目标
         sent = self._send_nav(goal)
@@ -354,9 +412,7 @@ class PersonTracker(Node):
         while True:
             if gh.is_cancel_requested:
                 handle.cancel_goal_async()
-                gh.canceled()
-                res.message = '已取消'
-                return res
+                return self._canceled(gh, res)
             if req.timeout > 0 and time.time() - t0 > req.timeout:
                 handle.cancel_goal_async()
                 return finish(False, f'超时 {req.timeout:.0f}s', tr, robot)
@@ -374,6 +430,7 @@ class PersonTracker(Node):
                         and float(np.hypot(*(tr.xy - goal_person))) > self.replan_dist):
                     goal_person = tr.xy
                     goal = approach_goal(goal_person, robot, dist)
+                    self.mark.update(xy=(float(goal_person[0]), float(goal_person[1])), frames=self.mark['frames'] + 1)
                     sent = self._send_nav(goal)
                     if sent is not None:
                         handle, result = sent
@@ -390,6 +447,12 @@ class PersonTracker(Node):
 
     # ---------------- 可视化 ----------------
     def publish_vis(self):
+        try:
+            self._publish_vis()
+        except Exception as e:   # noqa: BLE001  显示出错不能把节点带崩
+            self.get_logger().error(f'可视化出错: {e}', throttle_duration_sec=5.0)
+
+    def _publish_vis(self):
         with self.lock:
             tracks = [(tr.id, tr.xy, tr.id == self.tracker.target_id) for tr in self.tracker.tracks]
         stamp = self.get_clock().now().to_msg()
@@ -403,8 +466,8 @@ class PersonTracker(Node):
             m.header.frame_id, m.header.stamp = self.track_frame, stamp
             m.pose.position.x, m.pose.position.y = float(x), float(y)
             m.pose.orientation.z, m.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
-            m.scale.x, m.scale.y, m.scale.z = scale
-            m.color.r, m.color.g, m.color.b, m.color.a = rgba
+            m.scale.x, m.scale.y, m.scale.z = (float(v) for v in scale)
+            m.color.r, m.color.g, m.color.b, m.color.a = (float(v) for v in rgba)
             return m
 
         for tid, xy, is_target in tracks:
@@ -415,13 +478,30 @@ class PersonTracker(Node):
             arr.markers.append(t)
             if is_target:
                 self.pub_target.publish(self._pose(xy[0], xy[1], 0.0))
-        if self.mark is not None:
-            arr.markers.append(mk('mark', 0, Marker.SPHERE, *self.mark[0], (0.2, 0.4, 1.0, 0.9), (0.3, 0.3, 0.3)))
-        if self.nav_goal is not None:
-            g = self.nav_goal
-            arr.markers.append(mk('goal', 0, Marker.ARROW, g[0], g[1], (1.0, 0.2, 0.2, 0.9), (0.6, 0.1, 0.1),
-                                  yaw=g[2]))
+        mark, goal = self.mark, self.nav_goal
+        if mark is not None:
+            a = 1.0 if mark['active'] else 0.4
+            arr.markers.append(mk('mark', 0, Marker.SPHERE, *mark['xy'], (1.0, 0.1, 0.1, a), (0.3, 0.3, 0.3)))
+        if goal is not None:
+            arr.markers.append(mk('goal', 0, Marker.ARROW, goal[0], goal[1], (1.0, 0.3, 0.8, 0.9), (0.6, 0.1, 0.1),
+                                  yaw=goal[2]))
         self.pub_markers.publish(arr)
+
+        now = self.get_clock().now().nanoseconds * 1e-9
+        with self.lock:
+            trs = [{'id': tr.id, 'x': round(float(tr.x[0]), 3), 'y': round(float(tr.x[1]), 3),
+                    'speed': round(tr.speed, 2), 'cam_age': round(now - tr.t_cam, 1),
+                    'target': tr.id == self.tracker.target_id} for tr in self.tracker.tracks]
+        st = {k: (round(v, 1) if isinstance(v, float) else v) for k, v in self.det_stat.items() if k != 't'}
+        state = {
+            'frame': self.track_frame, 'tracks': trs,
+            'mark': None if mark is None else {**mark, 'xy': [round(v, 3) for v in mark['xy']]},
+            'goal': None if goal is None else [round(float(v), 3) for v in goal],
+            'approach': self.approach, 'busy': self.busy, 'det': st,
+            'params': {k: self.get_parameter(k).value for k in ('face_front', 'approach_distance', 'search_timeout')},
+            'camera_info': self.info is not None,
+        }
+        self.pub_state.publish(String(data=json.dumps(state, ensure_ascii=False)))
 
     def destroy_node(self):
         self.running = False

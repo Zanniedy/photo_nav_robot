@@ -69,6 +69,7 @@ import { gridToCanvas, mapColor, costColor } from '../lib/grid.js'
 import { store, saveLayers, toast } from '../lib/store.js'
 import { annot, SHAPE_TYPES, addShape, updateShape, removeShape, beginEdit, addPoint, editPoint, deletePoint, undo } from '../lib/annot.js'
 import { drawShape, drawPoint, hitShape, hitPoint } from '../lib/draw.js'
+import { person, personOnline } from '../lib/person.js'
 
 const TOOLS = [
   { id: 'pan', label: '✋ 平移', tip: '左键拖动平移，滚轮缩放（任何工具下右键也可平移）' },
@@ -92,6 +93,7 @@ const LAYERS = [
   { id: 'trail', label: '轨迹', color: '#fa0' },
   { id: 'shapes', label: '绘图标注', color: '#fc0' },
   { id: 'points', label: '点位', color: '#2ee6a6' },
+  { id: 'person', label: '人员跟踪（红点=记住的位置）', color: '#ff2a2a', topic: '/person/state' },
 ]
 const ROBOT_RADIUS = 0.28
 
@@ -190,6 +192,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 watch(() => store.fixedFrame, () => { trail = []; dirty = true })
 watch(() => [store.layers, store.waypoints, store.goal, store.tool, store.drawType], () => { dirty = true; if (store.tool !== 'draw') cancelDraft() }, { deep: true })
 watch(() => [annot.shapes, annot.points, annot.selected, annot.selectedPoint], () => { dirty = true }, { deep: true })
+watch(() => person.t, () => { dirty = true })
 
 // 第一次收到地图时自动缩放到全图
 watch(() => rosState.connected, () => { firstMap = true })
@@ -668,6 +671,40 @@ function drawAnnotPreview(ctx, toS) {
   }
 }
 
+/** person_tracker 的轨迹（橙圈，目标绿圈）、记住的位置（红点）、导航目标（箭头） */
+function drawPerson(ctx) {
+  const st = person.state
+  if (!st || !personOnline()) return
+  const T = lookup(store.fixedFrame, st.frame)
+  if (!T) return
+  const toS = (x, y) => w2s(...apply(T, x, y))
+  const R = Math.max(6, 0.25 * view.scale)
+  ctx.save()
+  ctx.font = '12px sans-serif'
+  ctx.lineWidth = 2
+  for (const t of st.tracks) {
+    const [x, y] = toS(t.x, t.y)
+    ctx.strokeStyle = t.target ? '#3ef06a' : '#ffa31a'
+    ctx.fillStyle = t.target ? 'rgba(62,240,106,0.18)' : 'rgba(255,163,26,0.15)'
+    ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+    ctx.fillStyle = ctx.strokeStyle
+    ctx.fillText(`#${t.id}`, x + R + 3, y - R)
+  }
+  if (st.goal) {
+    const g = compose(T, { x: st.goal[0], y: st.goal[1], yaw: st.goal[2] })
+    drawArrow(ctx, g.x, g.y, g.yaw, '#ff5ad2', 0.5)
+  }
+  if (st.mark) {
+    const [x, y] = toS(...st.mark.xy)
+    ctx.globalAlpha = st.mark.active ? 1 : 0.45
+    ctx.fillStyle = '#ff2a2a'
+    ctx.strokeStyle = '#fff'
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+    ctx.fillText(st.mark.active ? '记住' : '上次', x + 10, y + 4)
+  }
+  ctx.restore()
+}
+
 function draw() {
   const ctx = cv.value.getContext('2d')
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -730,6 +767,7 @@ function draw() {
     if (store.goal) { const p = fromMap(store.goal); drawArrow(ctx, p.x, p.y, p.yaw, '#ff3d7f', 0.5) }
   }
 
+  if (L.person !== false) drawPerson(ctx)
   if (robot) drawRobot(ctx, robot)
 
   if (drag && drag.kind === 'pose') {

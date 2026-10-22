@@ -96,6 +96,8 @@
       </div>
     </section>
 
+    <PersonPanel />
+
     <Teleop />
   </div>
 </template>
@@ -106,6 +108,7 @@ import { api } from '../lib/api.js'
 import { publish, quatOf } from '../lib/ros.js'
 import { store, run, refreshMaps, toast, mapName } from '../lib/store.js'
 import Teleop from './Teleop.vue'
+import PersonPanel from './PersonPanel.vue'
 import { annot, gotoPoints } from '../lib/annot.js'
 
 // ---------- 按点名导航 ----------
