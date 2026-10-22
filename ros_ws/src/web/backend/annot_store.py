@@ -1,7 +1,10 @@
 """
-每张地图的标注（绘图形状 + 命名点位），按地图 id（yaml 绝对路径）存一个 JSON：
-  annotations_dir/<地图名>_<sha1(id)[:8]>.json
+每张地图的标注（绘图形状 + 命名点位）存一个 JSON，和地图文件放在一起：
+  <地图目录>/<地图名>.annot.json        （地图 id = yaml 绝对路径，foo.yaml → foo.annot.json）
   {"map": id, "shapes": [...], "points": [{id, name, x, y, yaw, note}, ...]}
+地图整目录拷走/改目录，标注跟着走；同名重新加载地图时自动读回。
+旧版存在 annotations_dir/<地图名>_<sha1(id)[:8]>.json：新位置没有文件时读旧的，下次保存写到新位置。
+地图目录不可写时退回 annotations_dir。
 
 web 后端和 ROS points_server 节点都读写这里，用 fcntl 文件锁串行化。纯 Python，无 ROS 依赖。
 """
@@ -17,7 +20,12 @@ class StoreError(ValueError):
     pass
 
 
-def _path(map_id: str) -> str:
+def _map_path(map_id: str) -> str:
+    base, ext = os.path.splitext(map_id)
+    return (base if ext in (".yaml", ".yml") else map_id) + ".annot.json"
+
+
+def _legacy_path(map_id: str) -> str:
     base = os.path.basename(map_id).rsplit(".", 1)[0]
     if base == "map":
         base = os.path.basename(os.path.dirname(map_id))
@@ -38,20 +46,33 @@ def _locked():
 
 
 def _read(map_id: str) -> dict:
-    try:
-        with open(_path(map_id)) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        d = {}
+    d = {}
+    for p in (_map_path(map_id), _legacy_path(map_id)):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+            break
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            d = {}
+            break
     return {"map": map_id, "shapes": list(d.get("shapes", [])), "points": list(d.get("points", []))}
 
 
 def _write(d: dict) -> None:
-    p = _path(d["map"])
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(d, f, indent=1, ensure_ascii=False)
-    os.replace(tmp, p)
+    for p in (_map_path(d["map"]), _legacy_path(d["map"])):
+        tmp = p + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(tmp, "w") as f:
+                json.dump(d, f, indent=1, ensure_ascii=False)
+            os.replace(tmp, p)
+            return
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+    raise StoreError("标注保存失败：地图目录和 annotations_dir 都不可写")
 
 
 def load(map_id: str) -> dict:

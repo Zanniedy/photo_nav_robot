@@ -14,3 +14,7 @@ lio_slam_node:
     kf_trans:     0.30   # 相对关键帧平移超过此值换关键帧 (m)
     kf_rot:       0.35   # 相对关键帧旋转超过此值换关键帧 (rad)
     max_rejects:  10     # 连续拒绝超过此数强制重置关键帧
+    # 高速补偿（2026-10-22）
+    deskew:          true    # 扫描运动补偿
+    deskew_reversed: true    # scan 下标大的点先采；装反了的表现是原地转时墙更糊，切 false 对比
+    pred_min_speed:  0.05    # m/s，低于此不外推平移

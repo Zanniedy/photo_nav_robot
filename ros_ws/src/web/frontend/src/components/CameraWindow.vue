@@ -1,6 +1,6 @@
 <template>
-  <div class="cam" :style="{ left: pos.x + 'px', top: pos.y + 'px', width: pos.w + 'px' }">
-    <div class="head" @pointerdown="dragStart">
+  <div class="cam">
+    <div class="head">
       <span class="led" :class="camRunning ? (fps > 0 ? 'ok' : 'warn') : 'bad'" />
       <b>相机</b>
       <span class="muted small mono">{{ fps ? fps.toFixed(1) + ' fps' : '无图像' }}</span>
@@ -74,7 +74,6 @@
         </div>
       </template>
     </div>
-    <div class="resize" @pointerdown="resizeStart" />
   </div>
 </template>
 
@@ -83,13 +82,6 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { api } from '../lib/api.js'
 import { subscribe, callService, rosState } from '../lib/ros.js'
 import { store, run, toast } from '../lib/store.js'
-
-const POS_KEY = 'robot-ui-camwin'
-const read = () => {
-  try { return { x: 60, y: 60, w: 480, ...JSON.parse(localStorage.getItem(POS_KEY) || '{}') } } catch { return { x: 60, y: 60, w: 480 } }
-}
-const pos = ref(read())
-const savePos = () => { try { localStorage.setItem(POS_KEY, JSON.stringify(pos.value)) } catch { /* 无痕模式 */ } }
 
 const mode = ref('preview')
 const src = ref('')
@@ -210,28 +202,11 @@ async function reset() {
   call('reset')
 }
 
-function dragStart(e) {
-  const x0 = e.clientX, y0 = e.clientY, p0 = { ...pos.value }
-  const move = (ev) => {
-    pos.value.x = Math.max(0, Math.min(window.innerWidth - 120, p0.x + ev.clientX - x0))
-    pos.value.y = Math.max(0, Math.min(window.innerHeight - 40, p0.y + ev.clientY - y0))
-  }
-  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); savePos() }
-  window.addEventListener('pointermove', move)
-  window.addEventListener('pointerup', up)
-}
-function resizeStart(e) {
-  const x0 = e.clientX, w0 = pos.value.w
-  const move = (ev) => { pos.value.w = Math.max(320, Math.min(1280, w0 + ev.clientX - x0)) }
-  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); savePos() }
-  window.addEventListener('pointermove', move)
-  window.addEventListener('pointerup', up)
-}
 </script>
 
 <style scoped>
-.cam { position: fixed; z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; max-height: calc(100vh - 20px); overflow: auto; }
-.head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--line); cursor: move; user-select: none; position: sticky; top: 0; background: var(--panel); }
+.cam { background: var(--panel); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; flex-shrink: 0; }
+.head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--line); user-select: none; }
 .spacer { flex: 1; }
 .img-wrap { background: #000; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; }
 .img-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -248,5 +223,4 @@ function resizeStart(e) {
 .btn:hover { background: #353a48; }
 .btn.dis { opacity: 0.45; pointer-events: none; }
 .num { width: 56px; }
-.resize { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--line) 50%); }
 </style>

@@ -14,6 +14,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(yaml-cpp REQUIRED)
@@ -36,6 +38,8 @@ ament_target_dependencies(robot_bridge_node
   rclcpp
   geometry_msgs
   std_msgs
+  nav_msgs
+  rcl_interfaces
   ament_index_cpp
 )
 
@@ -47,5 +51,11 @@ install(
   DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_cmd_control test/test_cmd_control.cpp)
+  target_include_directories(test_cmd_control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+endif()
 
 ament_package()

@@ -14,3 +14,9 @@ lio_ekf_node:
     r_lio_xy:   0.0025   # lio_odom 位置观测噪声 (0.05m)²
     r_lio_yaw:  0.0012   # lio_odom yaw 观测噪声 (~2°)²
     r_yaw:      0.0003   # /robot/yaw 观测噪声 (~1°)²
+
+    # 速度估计（/lio_ekf_odom 的 twist.linear，车体系），给 Nav2 控制器和 bridge 线速度自适应用
+    q_vel_acc:        0.05     # 加速度过程噪声 (m/s²)²·s：大=跟手但噪，小=平滑但滞后。仿真(lio 噪声 1.5cm)：0.05→速度噪声 0.04m/s、阶跃滞后 0.2s；0.5→0.09m/s、0.1s
+    r_vel_xy:         0.0004   # lio 帧间位置噪声 (0.02m)²
+    vel_gate_chi2:    13.8     # 马氏距离门限（2 自由度 99.9%）
+    vel_max_outliers: 3        # 连续离群这么多帧就重置速度估计

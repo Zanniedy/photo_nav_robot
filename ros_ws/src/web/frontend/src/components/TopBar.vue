@@ -19,6 +19,7 @@
     </button>
     <button v-if="mode === 'mapping' || mode === 'navigation'" @click="run('退出模式', api.stop)" :disabled="!!store.busy">退出{{ MODE_LABEL[mode] }}</button>
     <button :class="{ on: store.cameraOpen }" @click="store.cameraOpen = !store.cameraOpen" title="相机预览 / 标定">相机</button>
+    <button :class="{ on: store.velOpen }" @click="store.velOpen = !store.velOpen" title="目标速度 vs 实际速度曲线">速度</button>
     <button class="danger" @click="stopAll" :disabled="!!store.busy" title="停掉底盘/建图/导航（保留 rosbridge）">全部停止</button>
     <span v-if="store.busy" class="busy">{{ store.busy }}…</span>
     <button v-if="store.auth.enabled" class="sm" @click="logout" title="退出登录">登出</button>

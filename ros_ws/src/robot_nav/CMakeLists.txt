@@ -109,6 +109,12 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_scan_matcher_2d test/test_scan_matcher_2d.cpp)
   target_link_libraries(test_scan_matcher_2d Eigen3::Eigen)
+  ament_add_gtest(test_velocity_kf test/test_velocity_kf.cpp)
+  target_link_libraries(test_velocity_kf Eigen3::Eigen)
+  ament_add_gtest(test_lio_deskew test/test_lio_deskew.cpp)
+  target_include_directories(test_lio_deskew PRIVATE ${libpointmatcher_INCLUDE_DIRS})
+  target_link_libraries(test_lio_deskew ${libpointmatcher_LIBRARIES} Eigen3::Eigen TBB::tbb)
+  ament_target_dependencies(test_lio_deskew sensor_msgs)
 endif()
 
 install(TARGETS pcd_map_node pcd_map_server_node lio_slam_node odom_path_node lio_ekf_node sim_imu_bridge_node map_localizer_node

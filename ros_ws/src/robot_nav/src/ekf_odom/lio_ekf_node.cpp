@@ -30,6 +30,7 @@ struct YawMeas {
 struct LioMeas {
     double stamp;
     double px, py, yaw;
+    bool   valid;     // false：lio 本帧 ICP 被拒（只转 yaw、平移没测），速度估计跳过
 };
 
 class LioEkfNode : public rclcpp::Node {
@@ -51,6 +52,11 @@ public:
         declare_parameter("r_lio_xy",  0.0025);
         declare_parameter("r_lio_yaw", 0.0012);
         declare_parameter("r_yaw",     0.0003);
+        // 速度估计（twist.linear）：q_vel_acc 越大越跟手、越噪；r_vel_xy 是 lio 帧间位置噪声
+        declare_parameter("q_vel_acc",      0.05);     // (m/s²)²·s
+        declare_parameter("r_vel_xy",       0.0004);   // (0.02 m)²
+        declare_parameter("vel_gate_chi2",  13.8);     // 2 自由度 99.9%
+        declare_parameter("vel_max_outliers", 3);
 
         odom_frame_ = get_parameter("odom_frame").as_string();
         base_frame_ = get_parameter("base_frame").as_string();
@@ -61,6 +67,10 @@ public:
         ekf_.set_R_lio(get_parameter("r_lio_xy").as_double(),
                        get_parameter("r_lio_yaw").as_double());
         ekf_.set_r_yaw(get_parameter("r_yaw").as_double());
+        vel_kf_.set_params(get_parameter("q_vel_acc").as_double(),
+                           get_parameter("r_vel_xy").as_double(),
+                           get_parameter("vel_gate_chi2").as_double(),
+                           static_cast<int>(get_parameter("vel_max_outliers").as_int()));
 
         odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
             get_parameter("pub_topic").as_string(), 10);
@@ -105,6 +115,8 @@ public:
                     msg->pose.pose.orientation.z,
                     msg->pose.pose.orientation.w);
                 m.yaw = tf2::getYaw(q);
+                // lio_slam_node 对被拒帧把位置方差设成很大；旧版全 0 也当有效
+                m.valid = msg->pose.covariance[0] < 1.0;
                 push_lio(m);
             });
 
@@ -176,6 +188,7 @@ private:
                     if (dt > 0.0) ekf_.predict(dt, imu.yaw_rate);
                 }
                 last_imu_t = imu.stamp;
+                yaw_rate_  = imu.yaw_rate;
             }
 
             // yaw update
@@ -195,6 +208,9 @@ private:
                 } else {
                     ekf_.update_lio(m.px, m.py, m.yaw);
                 }
+                if (!vel_kf_.step(m.stamp, m.px, m.py, m.valid))
+                    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                        "velocity KF: lio position outlier rejected");
                 latest_stamp = m.stamp;
                 updated = true;
             }
@@ -251,6 +267,22 @@ private:
         msg.pose.pose.orientation.z = q.z();
         msg.pose.pose.orientation.w = q.w();
 
+        // twist 在 child_frame（车体系）下：odom 系速度按 yaw 转回车体
+        if (vel_kf_.initialized()) {
+            const double c = std::cos(x(2)), s = std::sin(x(2));
+            const Eigen::Vector2d v = vel_kf_.velocity();
+            Eigen::Matrix2d R;
+            R << c, s, -s, c;   // R(yaw)^T
+            const Eigen::Matrix2d Pv = R * vel_kf_.velocity_cov() * R.transpose();
+            msg.twist.twist.linear.x = R.row(0).dot(v);
+            msg.twist.twist.linear.y = R.row(1).dot(v);
+            msg.twist.covariance[0]  = Pv(0, 0);
+            msg.twist.covariance[1]  = msg.twist.covariance[6] = Pv(0, 1);
+            msg.twist.covariance[7]  = Pv(1, 1);
+        }
+        msg.twist.twist.angular.z = yaw_rate_;   // 陀螺直接测量
+        msg.twist.covariance[35]  = 1e-3;
+
         {
             std::lock_guard<std::mutex> lk(odom_mtx_);
             if (odom_buf_.size() >= BUF_MAX) odom_buf_.pop_front();
@@ -282,6 +314,8 @@ private:
     std::condition_variable             odom_cv_;
 
     LioEkf            ekf_;
+    VelocityKf        vel_kf_;    // 仅 proc_thread_ 读写
+    double            yaw_rate_{0.0};
     std::thread       proc_thread_;
     std::thread       pub_thread_;
     std::atomic<bool> running_{false};

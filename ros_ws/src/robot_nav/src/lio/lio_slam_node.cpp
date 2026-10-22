@@ -39,6 +39,12 @@ public:
         declare_parameter("kf_trans",     0.30);   // 相对关键帧平移超过此值换关键帧 (m)
         declare_parameter("kf_rot",       0.35);   // 相对关键帧旋转超过此值换关键帧 (rad)
         declare_parameter("max_rejects",  10);     // 连续拒绝超过此数强制重置关键帧
+        // 高速时的两项补偿：
+        //   deskew：按点的采集时刻做运动补偿（转 1rad/s 时一帧首尾差 5.7°，不补偿 ICP 会配歪/被拒）
+        //   匀速平移预测：速度超过 pred_min_speed 才外推平移（静止时外推会把 ICP 噪声正反馈成漂移）
+        declare_parameter("deskew",          true);
+        declare_parameter("deskew_reversed", true);   // true：scan 下标大的点先采（sllidar 驱动反转了数组）
+        declare_parameter("pred_min_speed",  0.05);   // m/s
 
         scan_topic_   = get_parameter("scan_topic").as_string();
         pub_topic_    = get_parameter("pub_topic").as_string();
@@ -52,6 +58,9 @@ public:
         kf_trans_     = get_parameter("kf_trans").as_double();
         kf_rot_       = get_parameter("kf_rot").as_double();
         max_rejects_  = static_cast<int>(get_parameter("max_rejects").as_int());
+        deskew_       = get_parameter("deskew").as_bool();
+        deskew_rev_   = get_parameter("deskew_reversed").as_bool();
+        pred_min_v_   = get_parameter("pred_min_speed").as_double();
 
         tf_buffer_   = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
@@ -136,14 +145,19 @@ private:
             double cur_yaw = 0.0;
             const bool imu_ok = yaw_at(rclcpp::Time(scan->header.stamp).seconds(), cur_yaw);
 
+            const double t_scan = rclcpp::Time(scan->header.stamp).seconds();
             if (!kf_scan_) {
                 kf_scan_      = scan;
+                kf_points_    = matcher_.make_points(*scan, deskew_for(*scan, 0.0, 0.0, 0.0));
                 T_odom_kf_    = pose_;
                 prev_yaw_rad_ = cur_yaw;
                 prev_imu_ok_  = imu_ok;
+                prev_t_       = t_scan;
                 enqueue_odom(scan->header.stamp);
                 continue;
             }
+            const double dt = std::clamp(t_scan - prev_t_, 1e-3, 0.5);
+            prev_t_ = t_scan;
 
             // IMU 第一次到达时没有上一帧可比，本帧先用上一帧的 yaw 增量，避免绝对 yaw 被当成增量
             double dyaw_pred = pose_yaw(last_delta_);
@@ -154,10 +168,13 @@ private:
             prev_yaw_rad_ = cur_yaw;
             prev_imu_ok_  = imu_ok;
 
-            // 预测：只用 IMU 旋转，平移不外推。
-            // 匀速外推在静止时会正反馈：ICP 噪声被当成速度外推，ICP 又收敛到外推初值附近，
-            // 实测静止 15s 漂 0.3m。帧间平移只有几 cm，ICP 从零初值就能收敛
-            const Pose2 pred_delta = make_pose(0.0, 0.0, dyaw_pred);
+            // 预测：旋转用 IMU；平移只在速度超过 pred_min_speed 时按上一帧速度外推。
+            // 静止时不外推：ICP 噪声会被当成速度外推，ICP 又收敛到外推初值附近，实测静止 15s 漂 0.3m
+            const Eigen::Vector2d v = vel_;   // 车体系 m/s
+            const Eigen::Vector2d dp = v.norm() > pred_min_v_ ? Eigen::Vector2d(v * dt) : Eigen::Vector2d::Zero();
+            const Pose2 pred_delta = make_pose(dp.x(), dp.y(), dyaw_pred);
+            const double wz = dyaw_pred / dt;
+            const DP cur_points = matcher_.make_points(*scan, deskew_for(*scan, v.x(), v.y(), wz));
             const Pose2 T_pred        = pose_ * pred_delta;
             const Pose2 T_kf_base_ini = T_odom_kf_.inverse() * T_pred;
 
@@ -166,7 +183,7 @@ private:
             try {
                 const Pose2 init_laser = T_bl_.inverse() * T_kf_base_ini * T_bl_;
                 bool enough = false;
-                const Pose2 T_kf_laser = matcher_.match(*kf_scan_, *scan, init_laser, enough);
+                const Pose2 T_kf_laser = matcher_.match(kf_points_, cur_points, init_laser, enough);
                 if (enough) {
                     T_kf_base = T_bl_ * T_kf_laser * T_bl_.inverse();
                     // 门限：ICP 结果相对预测的偏差。连续被拒时预测误差会累积，门限适度放宽，
@@ -187,37 +204,53 @@ private:
                 RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "ICP failed: %s", e.what());
             }
 
+            pose_valid_ = accepted;
             if (accepted) {
                 const Pose2 new_pose = T_odom_kf_ * T_kf_base;
                 last_delta_ = pose_.inverse() * new_pose;
                 pose_       = new_pose;
                 rejects_    = 0;
+                // 速度轻滤：单帧 ICP 噪声 ~1cm/0.1s = 0.1m/s，不滤会直接进预测和去畸变
+                vel_ = 0.5 * vel_ + 0.5 * Eigen::Vector2d(last_delta_.translation() / dt);
 
                 // 相对关键帧走得够远就换关键帧
                 if (T_kf_base.translation().norm() > kf_trans_ ||
                     std::abs(pose_yaw(T_kf_base))  > kf_rot_) {
                     kf_scan_   = scan;
+                    kf_points_ = cur_points;
                     T_odom_kf_ = pose_;
                 }
                 RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
                     "ICP ok: pose x=%.3f y=%.3f yaw=%.3f",
                     pose_.translation().x(), pose_.translation().y(), pose_yaw(pose_));
             } else {
-                // 回退只用 IMU 旋转、不外推平移：匀速外推在静止或匹配持续失败时会越推越远。
-                // 被拒期间漏掉的平移，下一次对同一关键帧匹配成功时会补回来
-                pose_       = pose_ * make_pose(0.0, 0.0, dyaw_pred);
-                last_delta_ = make_pose(0.0, 0.0, dyaw_pred);
+                // 回退用预测（IMU 旋转 + 运动中才有的匀速平移），速度每帧衰减：
+                // 持续匹配不上时不会一直按旧速度推下去。漏掉/多推的平移，下次对同一关键帧匹配成功时修正
+                pose_       = pose_ * pred_delta;
+                last_delta_ = pred_delta;
+                vel_       *= 0.7;
                 if (++rejects_ > max_rejects_) {
                     // 长时间匹配不上（退化/遮挡），以预测位姿重置关键帧，避免一直卡死
                     RCLCPP_WARN(get_logger(), "ICP rejected %d frames in a row, reset keyframe", rejects_);
                     kf_scan_    = scan;
+                    kf_points_  = cur_points;
                     T_odom_kf_  = pose_;
                     last_delta_ = make_pose(0.0, 0.0, 0.0);
+                    vel_.setZero();
                     rejects_    = 0;
                 }
             }
             enqueue_odom(scan->header.stamp);
         }
+    }
+
+    Deskew deskew_for(const sensor_msgs::msg::LaserScan & scan, double vx, double vy, double wz) const {
+        Deskew d;
+        d.enable   = deskew_;
+        d.reversed = deskew_rev_;
+        d.period   = scan.scan_time > 0.02f && scan.scan_time < 0.5f ? scan.scan_time : 0.1;
+        d.T_bl = T_bl_; d.vx = vx; d.vy = vy; d.wz = wz;
+        return d;
     }
 
     // 按时间戳在 IMU 历史里线性插值 yaw；超出范围取端点
@@ -304,6 +337,12 @@ private:
         msg.pose.pose.orientation.y = q.y();
         msg.pose.pose.orientation.z = q.z();
         msg.pose.pose.orientation.w = q.w();
+        // 协方差只用来标记本帧平移是否由 ICP 测得：被拒帧只转了 yaw，平移是旧值，
+        // 下游（lio_ekf 速度估计）据此跳过，不把它当成"静止"
+        const double var_xy = pose_valid_ ? 4e-4 : 1e6;
+        msg.pose.covariance[0]  = var_xy;
+        msg.pose.covariance[7]  = var_xy;
+        msg.pose.covariance[35] = pose_valid_ ? 1e-3 : 1e-2;
 
         {
             std::lock_guard<std::mutex> lk(odom_mtx_will_publish_);
@@ -351,11 +390,17 @@ private:
 
     // 关键帧与位姿（仅 proc_thread_ 读写，无需额外锁）
     sensor_msgs::msg::LaserScan::SharedPtr kf_scan_;
+    DP    kf_points_;                          // 关键帧点集（已去畸变）
+    Eigen::Vector2d vel_{Eigen::Vector2d::Zero()};   // 车体系速度估计 m/s
+    double prev_t_{0.0};
+    bool   deskew_{true}, deskew_rev_{true};
+    double pred_min_v_{0.05};
     Pose2 T_bl_        = Pose2::Identity();   // base <- laser 外参
     Pose2 T_odom_kf_   = Pose2::Identity();   // 关键帧时刻的 base 位姿
     Pose2 pose_        = Pose2::Identity();   // 当前 base 位姿
     Pose2 last_delta_  = Pose2::Identity();   // 上一帧 base 增量（无 IMU 时用它的 yaw 做预测）
     bool  have_extrinsic_{false};
+    bool  pose_valid_{true};   // 本帧 ICP 是否被接受
     int   rejects_{0};
 
     // yaw 先验（来自 /robot/yaw），yaw_hist_ 受 yaw_mtx_ 保护

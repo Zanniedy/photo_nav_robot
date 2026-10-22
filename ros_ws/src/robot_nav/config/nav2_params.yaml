@@ -147,10 +147,10 @@ controller_server:
     FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_mppi_controller::MPPIController"
-      angular_dist_threshold: 0.6           # ~35°
+      angular_dist_threshold: 1.0           # ~57°：只有起步/掉头这种大偏差才原地转，其余交给 MPPI 边走边转
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.8    # 过死区且 ICP 跟得上；u≈0.26
-      max_angular_accel: 2.0                # 与 bridge cmd_wz_acc 一致
+      rotate_to_heading_angular_vel: 0.6    # 原地转慢一点更稳，仍在死区以上（u≈0.2）
+      max_angular_accel: 1.2                # 与 bridge cmd_wz_acc 一致
       simulate_ahead_time: 1.0
     # MPPI：采样式 MPC，差速模型前向预测 time_steps*model_dt = 4s。ARM(A55) 上采样规模压到 600 条
     # 底盘：MCU 接收摇杆量 [-1,1]，比例控制（有死区），robot_bridge 平滑 + 标定换算
@@ -161,14 +161,14 @@ controller_server:
       iteration_count: 1
       temperature: 0.3
       gamma: 0.015
-      vx_std: 0.2
-      wz_std: 0.4
-      vx_max: 0.35
+      vx_std: 0.15                  # 采样噪声小一些，输出更平滑
+      wz_std: 0.3
+      vx_max: 0.25                  # 慢但顺：同时也给 lio 留余量
       vx_min: 0.0                   # 不倒车
-      wz_max: 1.2                   # 雷达 10Hz，转太快 ICP 跟不上
-      ax_max: 0.6                   # 与 bridge cmd_vx_acc 一致
-      ax_min: -1.0
-      az_max: 2.0
+      wz_max: 0.8                   # 雷达 10Hz，转太快 ICP 跟不上
+      ax_max: 0.4                   # 与 bridge cmd_vx_acc 一致
+      ax_min: -0.6                  # 与 bridge cmd_vx_dec 一致
+      az_max: 1.2                   # 与 bridge cmd_wz_acc 一致
       prune_distance: 1.7
       transform_tolerance: 0.5      # lio TF 比当前时刻晚 0.1~0.3s
       enforce_path_inversion: false
@@ -179,7 +179,13 @@ controller_server:
         trajectory_step: 5
         time_step: 3
       critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic", "GoalAngleCritic",
-                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic",
+                "TwirlingCritic"]
+      # 罚角速度大小：抑制 MPPI 采样噪声带来的左右摆，转向更顺
+      TwirlingCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0
       ConstraintCritic:
         enabled: true
         cost_power: 1

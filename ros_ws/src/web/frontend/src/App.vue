@@ -4,6 +4,11 @@
     <TopBar />
     <div class="main">
       <MapView />
+      <aside v-if="store.cameraOpen || store.velOpen" class="dock" :style="{ width: dockW + 'px' }">
+        <div class="resizer" @pointerdown="dockResizeStart" />
+        <CameraWindow v-if="store.cameraOpen" />
+        <VelocityWindow v-if="store.velOpen" />
+      </aside>
       <aside class="side" :style="{ width: sideW + 'px' }">
         <div class="resizer" @pointerdown="resizeStart" />
         <nav class="tabs">
@@ -19,7 +24,6 @@
         </div>
       </aside>
     </div>
-    <CameraWindow v-if="store.cameraOpen" />
   </div>
   <div v-if="store.toast" class="toast" :class="store.toast.kind" @click="store.toast = null">{{ store.toast.text }}</div>
 </template>
@@ -35,6 +39,7 @@ import AnnotPanel from './components/AnnotPanel.vue'
 import CommandPanel from './components/CommandPanel.vue'
 import LogPanel from './components/LogPanel.vue'
 import CameraWindow from './components/CameraWindow.vue'
+import VelocityWindow from './components/VelocityWindow.vue'
 import { store, checkAuth } from './lib/store.js'
 import { startRos } from './lib/ros.js'
 
@@ -51,10 +56,24 @@ const TABS = [
 const read = (k, d) => { try { return localStorage.getItem(k) || d } catch { return d } }
 const tab = ref(read('robot-ui-tab', 'control'))
 const sideW = ref(Number(read('robot-ui-side', 380)))
+const dockW = ref(Number(read('robot-ui-dock', 480)))
 
 function setTab(id) {
   tab.value = id
   try { localStorage.setItem('robot-ui-tab', id) } catch { /* 无痕模式 */ }
+}
+
+// 停靠栏（相机 / 速度曲线）左边缘拖动改宽度
+function dockResizeStart(e) {
+  const x0 = e.clientX, w0 = dockW.value
+  const move = (ev) => { dockW.value = Math.max(320, Math.min(900, w0 + x0 - ev.clientX)) }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    try { localStorage.setItem('robot-ui-dock', String(dockW.value)) } catch { /* 无痕模式 */ }
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
 }
 
 function resizeStart(e) {
@@ -113,6 +132,7 @@ input.num { width: 64px; }
 .app { display: flex; flex-direction: column; height: 100%; }
 .main { display: flex; flex: 1; min-height: 0; }
 .side { position: relative; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); flex-shrink: 0; }
+.dock { position: relative; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); flex-shrink: 0; overflow-y: auto; }
 .resizer { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
 .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 8px 0; color: var(--muted); border-bottom: 2px solid transparent; }

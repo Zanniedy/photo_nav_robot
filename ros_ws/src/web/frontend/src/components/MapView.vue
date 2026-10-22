@@ -31,6 +31,11 @@
         <button @click="fitMap" title="缩放到整张地图">全图</button>
       </div>
       <div class="group">
+        <button @click="rotateBy(90)" title="视图逆时针转 90°（Alt+滚轮细调 5°）" aria-label="逆时针旋转地图">⟲</button>
+        <button class="deg" @click="setRot(0)" :title="'当前视图旋转 ' + rotDeg + '°，点击复位'">{{ rotDeg }}°</button>
+        <button @click="rotateBy(-90)" title="视图顺时针转 90°（Alt+滚轮细调 5°）" aria-label="顺时针旋转地图">⟳</button>
+      </div>
+      <div class="group">
         <select v-model="store.fixedFrame" title="Fixed Frame">
           <option v-for="f in frameOptions" :key="f" :value="f">{{ f }}</option>
         </select>
@@ -97,7 +102,11 @@ const cursor = ref(null)
 const dragHint = ref('')
 const robotVisible = ref(true)
 const frameList = ref([])
-const view = reactive({ cx: 0, cy: 0, scale: 40 })   // scale: px / m
+// rot：视图旋转（rad，逆时针为正），只影响显示，不改任何坐标数据
+const ROT_KEY = 'robot-ui-maprot'
+const readRot = () => { try { return Number(localStorage.getItem(ROT_KEY)) || 0 } catch { return 0 } }
+const view = reactive({ cx: 0, cy: 0, scale: 40, rot: readRot() })   // scale: px / m
+const rotDeg = computed(() => { const d = Math.round(view.rot * 180 / Math.PI) % 360; return d > 180 ? d - 360 : d <= -180 ? d + 360 : d })
 const frameOptions = computed(() => {
   const s = new Set(['map', 'lio_odom', ...frameList.value])
   s.add(store.fixedFrame)
@@ -119,8 +128,20 @@ function rateOf(topic) {
 }
 
 // ---------- 坐标变换 ----------
-const w2s = (x, y) => [W / 2 + (x - view.cx) * view.scale, H / 2 - (y - view.cy) * view.scale]
-const s2w = (sx, sy) => ({ x: view.cx + (sx - W / 2) / view.scale, y: view.cy - (sy - H / 2) / view.scale })
+// 世界偏移先转 rot 再缩放；屏幕 y 向下
+function w2s(x, y) {
+  const c = Math.cos(view.rot), sn = Math.sin(view.rot), dx = x - view.cx, dy = y - view.cy
+  return [W / 2 + (c * dx - sn * dy) * view.scale, H / 2 - (sn * dx + c * dy) * view.scale]
+}
+/** 屏幕位移 → 世界位移 */
+function s2wDelta(dsx, dsy) {
+  const c = Math.cos(view.rot), sn = Math.sin(view.rot), u = dsx / view.scale, v = -dsy / view.scale
+  return { x: c * u + sn * v, y: -sn * u + c * v }
+}
+function s2w(sx, sy) {
+  const d = s2wDelta(sx - W / 2, sy - H / 2)
+  return { x: view.cx + d.x, y: view.cy + d.y }
+}
 
 function evtPos(e) {
   const r = cv.value.getBoundingClientRect()
@@ -190,6 +211,13 @@ function centerRobot() {
   if (T) { view.cx = T.x; view.cy = T.y; dirty = true } else toast('查不到机器人位姿', 'error')
 }
 
+function setRot(deg) {
+  view.rot = deg * Math.PI / 180
+  try { localStorage.setItem(ROT_KEY, String(view.rot)) } catch { /* 无痕模式 */ }
+  dirty = true
+}
+function rotateBy(deg) { setRot(Math.round((view.rot * 180 / Math.PI + deg) * 1e6) / 1e6) }
+
 function fitMap() {
   const d = layersData.map
   if (!d) { toast('还没收到 /map', 'error'); return false }
@@ -198,9 +226,12 @@ function fitMap() {
   const { width: w, height: h, resolution: r } = d.info
   const corners = [[0, 0], [w * r, 0], [0, h * r], [w * r, h * r]].map(([x, y]) => apply(o, x, y))
   const xs = corners.map((c) => c[0]), ys = corners.map((c) => c[1])
-  const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys)
   view.cx = (Math.max(...xs) + Math.min(...xs)) / 2
   view.cy = (Math.max(...ys) + Math.min(...ys)) / 2
+  // 按旋转后的屏幕方向量包围盒
+  const c = Math.cos(view.rot), sn = Math.sin(view.rot)
+  const us = corners.map(([x, y]) => c * x - sn * y), vs = corners.map(([x, y]) => sn * x + c * y)
+  const bw = Math.max(...us) - Math.min(...us), bh = Math.max(...vs) - Math.min(...vs)
   view.scale = Math.max(5, Math.min(400, 0.9 * Math.min(W / bw, H / bh)))
   dirty = true
   return true
@@ -209,8 +240,13 @@ function fitMap() {
 function onWheel(e) {
   const [sx, sy] = evtPos(e)
   const before = s2w(sx, sy)
-  const k = Math.exp(-e.deltaY * 0.0015)
-  view.scale = Math.max(2, Math.min(800, view.scale * k))
+  if (e.altKey) {
+    // Alt+滚轮：绕光标处旋转 5°
+    rotateBy(e.deltaY > 0 ? -5 : 5)
+  } else {
+    const k = Math.exp(-e.deltaY * 0.0015)
+    view.scale = Math.max(2, Math.min(800, view.scale * k))
+  }
   const after = s2w(sx, sy)
   view.cx += before.x - after.x
   view.cy += before.y - after.y
@@ -235,7 +271,7 @@ function mapToScreenFn() {
   const T = lookup(store.fixedFrame, 'map')
   if (!T) return null
   const f = (x, y) => { const [wx, wy] = apply(T, x, y); return w2s(wx, wy) }
-  f.yaw = (yaw) => -(yaw + T.yaw)
+  f.yaw = (yaw) => -(yaw + T.yaw + view.rot)
   return f
 }
 
@@ -339,8 +375,9 @@ function onMove(e) {
   if (draft) dirty = true   // 预览线跟着光标
   if (!drag) return
   if (drag.kind === 'pan') {
-    view.cx = drag.cx - (sx - drag.sx) / view.scale
-    view.cy = drag.cy + (sy - drag.sy) / view.scale
+    const d = s2wDelta(sx - drag.sx, sy - drag.sy)
+    view.cx = drag.cx - d.x
+    view.cy = drag.cy - d.y
   } else if (drag.kind === 'pose') {
     drag.cur = s2w(sx, sy)
   } else if (drag.kind === 'shape') {
@@ -509,38 +546,39 @@ function drawGridLayer(ctx, d, alpha = 1) {
   if (!d) return
   const o = gridOrigin(d)
   if (!o) return
-  const s = view.scale, r = d.info.resolution, h = d.info.height
-  const c = Math.cos(o.yaw), sn = Math.sin(o.yaw)
+  const r = d.info.resolution, h = d.info.height
+  // 图像像素 (u, v) → 栅格系 (u·r, (h−v)·r)（图像第 0 行是 y 最大），再经 origin、视图到屏幕；仿射，取三点定矩阵
+  const P = (u, v) => w2s(...apply(o, u * r, (h - v) * r))
+  const [ex, ey] = P(0, 0), [ax, ay] = P(1, 0), [cx, cy] = P(0, 1)
   ctx.save()
   ctx.globalAlpha = alpha
   ctx.imageSmoothingEnabled = false
-  ctx.setTransform(
-    dpr * s * r * c, -dpr * s * r * sn,
-    dpr * s * r * sn, dpr * s * r * c,
-    dpr * (W / 2 + s * (o.x - view.cx) - s * r * sn * h),
-    dpr * (H / 2 - s * (o.y - view.cy) - s * r * c * h))
+  ctx.setTransform(dpr * (ax - ex), dpr * (ay - ey), dpr * (cx - ex), dpr * (cy - ey), dpr * ex, dpr * ey)
   ctx.drawImage(d.img, 0, 0)
   ctx.restore()
 }
 
 function drawGrid(ctx) {
   const step = view.scale < 8 ? 10 : 1
-  const tl = s2w(0, 0), br = s2w(W, H)
+  // 视图可能旋转：取屏幕四角的世界包围盒，网格线两端用 w2s 画
+  const cs = [s2w(0, 0), s2w(W, 0), s2w(0, H), s2w(W, H)]
+  const x0 = Math.min(...cs.map((p) => p.x)), x1 = Math.max(...cs.map((p) => p.x))
+  const y0 = Math.min(...cs.map((p) => p.y)), y1 = Math.max(...cs.map((p) => p.y))
   ctx.strokeStyle = 'rgba(120,130,160,0.18)'
   ctx.lineWidth = 1
   ctx.beginPath()
-  for (let x = Math.ceil(tl.x / step) * step; x <= br.x; x += step) {
-    const [sx] = w2s(x, 0); ctx.moveTo(sx, 0); ctx.lineTo(sx, H)
+  for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) {
+    ctx.moveTo(...w2s(x, y0)); ctx.lineTo(...w2s(x, y1))
   }
-  for (let y = Math.ceil(br.y / step) * step; y <= tl.y; y += step) {
-    const [, sy] = w2s(0, y); ctx.moveTo(0, sy); ctx.lineTo(W, sy)
+  for (let y = Math.ceil(y0 / step) * step; y <= y1; y += step) {
+    ctx.moveTo(...w2s(x0, y)); ctx.lineTo(...w2s(x1, y))
   }
   ctx.stroke()
   // fixedFrame 原点坐标轴
   const [ox, oy] = w2s(0, 0)
   ctx.lineWidth = 2
-  ctx.strokeStyle = '#e44'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + 0.5 * view.scale, oy); ctx.stroke()
-  ctx.strokeStyle = '#4e4'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox, oy - 0.5 * view.scale); ctx.stroke()
+  ctx.strokeStyle = '#e44'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(...w2s(0.5, 0)); ctx.stroke()
+  ctx.strokeStyle = '#4e4'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(...w2s(0, 0.5)); ctx.stroke()
 }
 
 function drawPath(ctx, msg, color, width) {
@@ -580,7 +618,7 @@ function drawArrow(ctx, x, y, yaw, color, len = 0.5, label = '') {
   const L = Math.max(18, len * view.scale)
   ctx.save()
   ctx.translate(sx, sy)
-  ctx.rotate(-yaw)
+  ctx.rotate(-(yaw + view.rot))
   ctx.strokeStyle = color
   ctx.fillStyle = color
   ctx.lineWidth = 3
@@ -600,7 +638,7 @@ function drawRobot(ctx, T) {
   const R = Math.max(6, ROBOT_RADIUS * view.scale)
   ctx.save()
   ctx.translate(sx, sy)
-  ctx.rotate(-T.yaw)
+  ctx.rotate(-(T.yaw + view.rot))
   ctx.fillStyle = 'rgba(40,140,255,0.25)'
   ctx.strokeStyle = '#3a9bff'
   ctx.lineWidth = 2
@@ -716,6 +754,7 @@ canvas { display: block; touch-action: none; cursor: crosshair; }
 .layers .chk { border: 0; padding: 3px 4px; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .shapes-pick button { min-width: 30px; }
+.group .deg { min-width: 46px; font-variant-numeric: tabular-nums; }
 .shapes-pick input[type=color] { width: 34px; padding: 0 2px; border: 0; border-right: 1px solid var(--line); border-radius: 0; height: auto; }
 .chk.inline { border: 0; border-radius: 0; }
 .rate { margin-left: auto; padding-left: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }

@@ -1,11 +1,86 @@
-# 交接文档（2026-10-15）
+# 交接文档（2026-10-22 更新）
 
 平面移动机器人：2D 激光（思岚 C1）+ 底盘 MCU（串口上报 yaw），无轮速计。
 链路：`robot_bridge` → `lio_slam_node`（帧间 ICP）→ `lio_ekf_node` → slam_toolbox 建图 / map_localizer + Nav2（MPPI）导航，外加网页控制台 **MAX_NAV_ROBOT**（`ros_ws/src/web`）。
 
 - git 根：`/home/lsy/cs_project/robot`，远端 `github.com/Zanniedy/photo_nav_robot`（main）
-- 实机：`sunrise@192.168.10.42`（ARM64），代码在 `~/max_robot/ros_ws`，地图在 `~/max_robot/maps`
+- 实机：`sunrise@192.168.10.42`（有线）/ `192.168.1.124`（Wi-Fi），ARM64，代码在 `~/max_robot/ros_ws`，地图在 `~/max_robot/maps`
 - 同步：`bash rsync.sh`（本机执行）；远端编译：`bash make_remote.sh [--packages-select ...]`（机器人上执行）
+
+## 2026-10-22：底盘控制闭环、速度估计、lio 去畸变、网页功能
+
+> 10-21 及之前的改动已在 commit `30915ed camera` 提交；**本节所有改动都还没 commit**，已 rsync 到机器人并编译、重启生效。
+
+### 网络（先看这个）
+
+- 机器人自带 Wi-Fi，已连路由器 `TP-LINK_BF09_5G`，**无线 IP 192.168.1.124**；有线 eth0 是 192.168.10.42
+- 网页后端监听 0.0.0.0:8000，所以 Win 主机、平板连同一个 Wi-Fi 后直接开 `http://192.168.1.124:8000` 就行，**不用再拖网线**
+- 拖着网线跑会被线拽住：10-22 实测同一指令速度忽快忽慢、后退测出正速度，都是线的问题
+- 路由器 DHCP 最好给机器人绑定固定 IP；ssh/rsync 走无线时把 `rsync.sh` 和下面命令里的 IP 换成 192.168.1.124
+
+### 改了什么
+
+**底盘控制（`robot_bridge`）**
+- `src/cmd_control.hpp`（新，纯函数，有单测）：
+  - 前馈从直线改成实测 (u, 稳态速度) 查表：`cmd_wz_table_u/v`、`cmd_vx_table_u/v`。转向表是 10-14 阶跃实测点，前进表还是旧线性模型取的点，**待稳态实测替换**
+  - 转向前馈分两种：原地转保留起步死区补偿；前进中（|vx|≥`cmd_moving_v_full`=0.1）不抬死区，小转向按比例输出，边走边转连续
+  - 角速度 PI 闭环：陀螺 yaw_speed 反馈（扣 bias，轻 EMA），叠加在前馈上，`cmd_wz_closed_loop` 开关，陀螺 0.2s 无数据自动退回纯前馈
+  - 线速度没有快反馈：用 `/lio_ekf_odom` 速度慢慢修正前馈增益 k，前进/后退各一个（底盘前后不对称：0.2m/s 指令前进 0.17、后退 0.23），k∈[0.8,1.3]；实测速度 < 指令×30% 视为失速（遥控接管/卡住），不调 k
+  - 速度平滑改为 S 曲线（加速度 + 加加速度限制）：`cmd_vx_acc 0.4 / dec 0.6 / jerk 1.5`，`cmd_wz_acc 1.2 / dec 1.8 / jerk 5`
+- 所有控制参数可 `ros2 param set /robot_bridge_node ...` 在线改
+- 调参话题 `/robot/cmd_debug`（Float32MultiArray，50Hz，有订阅才发）：`[target_vx, cur_vx, meas_vx, u_vx, k_vx, target_wz, cur_wz, meas_wz, u_wz, i_wz]`
+
+**速度估计（`lio_ekf_node`）**
+- **之前 `/lio_ekf_odom` 的 twist 全是 0**，而 Nav2 controller 的 odom 就是它，MPPI 一直以为车是静止的
+- 新增 `VelocityKf`（`lio_ekf.hpp`）：odom 系匀速 KF，只吃 lio 位置，dt 用扫描时间戳；输出车体系 twist.linear，twist.angular.z 用陀螺
+- `q_vel_acc=0.05`：仿真里速度噪声 0.04m/s、阶跃滞后约 0.2s；稳态速度标准差约 0.1（bridge 用 0.15 做门限）
+- lio 被拒帧（只转 yaw、平移没测）用 `pose.covariance[0]=1e6` 标记，速度估计跳过
+
+**lio 高速跟踪（`lio_slam_node`）**
+- 扫描去畸变 `Deskew`（`lio_math.hpp`）：雷达一圈 0.1s，1rad/s 时一帧首尾差 5.7°，4m 处错开 0.4m。按点的采集时刻用匀速模型补偿。合成测试（0.35m/s + 1rad/s）：去畸变前 ICP 误差 3cm/2.4°，去畸变后≈0
+- **`deskew_reversed: true` 是按 sllidar 驱动反转数组推断的，没实测**。原地快转时墙反而更糊就改 false 对比
+- 运动中（>0.05m/s）预测加匀速平移；静止不加（会把 ICP 噪声正反馈成漂移）；被拒帧速度每帧衰减 0.7
+- 关键帧点集只算一次缓存
+
+**Nav2（`nav2_params.yaml`）**
+- 慢但顺：`vx_max 0.25`、`wz_max 0.8`，`ax_max/ax_min/az_max` 与 bridge 一致
+- RotationShim `angular_dist_threshold` 0.6→1.0rad：只有大偏差才原地转，其余边走边转；原地转速 0.6
+- MPPI 采样噪声 `vx_std 0.15 / wz_std 0.3`，加 `TwirlingCritic`（weight 10）抑制左右摆
+
+**网页**
+- 顶栏「速度」：目标/实际速度曲线（线速度、角速度两张图，蓝=目标、橙=实际），时间窗 10/30/60s、暂停、导出 CSV
+- 相机和速度曲线改为地图与右侧面板之间的停靠栏，左边缘拖宽度
+- 地图工具栏加 ⟲ / ⟳ 旋转 90°、点角度复位、Alt+滚轮 5° 细调；只改显示，发出的坐标仍是 map 系
+- 控制页「导航」加点名搜索框：回车（同名或唯一匹配）或点列表项直接导航
+- **标注/点位改存地图旁 `<地图名>.annot.json`**，地图目录拷走标注跟着走；旧 `~/max_robot/annotations/` 文件仍能读，下次保存写到新位置；地图目录不可写时退回旧目录
+
+### 测试情况
+
+- 本机单测：`robot_bridge/test_cmd_control` 8 个、`robot_nav` 的 `test_velocity_kf` / `test_lio_deskew` / `test_scan_matcher_2d` 共 10 个，全过
+- 实车阶跃（脚本在机器人 `/tmp/motion_test.py`，重启会丢）：只有第一轮可信（之后网线缠上）：转向 0.3/0.6/1.0 开环 0.39/0.59/1.05，闭环 0.32/0.59/1.02
+- **没实车验证的**：S 曲线平滑和边走边转的手感、去畸变方向、新 Nav2 参数、点名导航、标注存到地图旁
+- 低速原地转（0.3rad/s）贴着死区，有黏滑，闭环追不满，可能要加大 `cmd_wz_ki` 或把原地转最低速度抬到能稳定转的值
+
+### 已知问题
+
+- controller_server 一直报 `Extrapolation Error ... map → base_footprint`（TF 比请求时刻晚约 57ms），lio TF 用的是扫描时间戳。`transform_tolerance` 0.5 兜住了，没影响控制，以后可以处理
+- 遥控器优先级最高，没关时 MCU 不执行 PC 指令：表现为 bridge 日志里指令正常、实测速度 0
+
+### 下一步：Win 主机 / 平板交互接口（只定了范围，还没写）
+
+已定：
+- 传输：复用机器人 FastAPI 后端，加一组 `/api/v1` 接口。HTTP 请求/应答，WebSocket 推送状态和导航进度。网页、Win、平板共用
+- 网络：机器人 Wi-Fi，Win 和平板连同一路由器
+- 第一版功能：
+  1. 点位查询 + 按名导航：列出/搜索点位；单点或多点依次导航；返回结果（到达/失败/取消）和进度（剩余距离、预计时间）
+  2. 状态与控制：位姿、模式和地图、是否在导航、定位是否可靠（`/localizer/score`）；取消导航、急停
+  3. 点位管理：新增/修改/删除，含"把当前位置存成点"
+  4. 人员定位结果：先定格式（人的方位角、距离、置信度、时间戳），等 person_locator 第 3 步做完再接数据
+
+还要定：
+- 认证：网页现在是 cookie 登录；给 Win/平板建议加固定 API token（请求头带，配在 `config.yaml`），内网够用
+- Win 端用什么语言、要不要写客户端示例（用户说先不写）
+- 已有可复用的：`GET/POST/PATCH/DELETE /api/points`、`POST /api/points_goto`、`GET /api/status`、`POST /api/nav/cancel`；ROS 侧 `/points/{list,get,set,delete,goto}`。缺导航结果/进度回传（现在 points_goto 发出就返回）、急停、统一的错误码
 
 ## 2026-10-21：网页相机窗口 + 真机在线标定
 
@@ -44,7 +119,7 @@
 3. **模型部分（YOLO26-seg 转 X5 BPU）单独写在 `ros_ws/src/person_locator/MODEL_HANDOFF.md`**，接手模型先看那份。现状：第一版 `.bin` 已在 docker 容器 `rdk_x5_mapper` 里生成（`~/rdk_x5_mapper/yolo26/model_output/`），但校准用的是棋盘图，精度偏低，还没上板
 5. calib_node 的 CPU 占用没测过（每帧都要全尺寸解码加找角点）。卡的话降低处理帧率，或者只在 1/2 图上检测
 6. 相机外参还是 `robot.launch.py` 里的假值 `base_link→camera_link 0.25 0 0.6`，人员定位第 3 步前要实测（相机和雷达的相对 yaw 最关键）
-7. 本轮和上一轮的改动都**还没 git commit**
+7. ~~本轮和上一轮的改动都还没 git commit~~：已在 `30915ed camera` 提交
 8. 接下来：人员定位第 2 步，选 X5 BPU 上能跑的人脸或人体检测模型；第 3 步用相机算方位角，激光在这个角度窗口里取距离
 
 ### 远程操作的坑
@@ -52,7 +127,7 @@
 - 本机 ssh/scp 会加载 miniconda 的 OpenSSL 报 version mismatch，要用 `env -u LD_LIBRARY_PATH PATH=/usr/bin:/bin /usr/bin/ssh sunrise@192.168.10.42 ...`（rsync.sh 里已经这样处理了）
 - ssh 里后台起服务要 `setsid nohup ... < /dev/null &`，否则 ssh 会一直挂着不退出
 
-## 当前状态
+## 当前状态（10-15 记录，下表和「接手后第一件事」已过时：改动都已提交并同步，以 10-22 一节为准）
 
 | 项 | 状态 |
 |---|---|

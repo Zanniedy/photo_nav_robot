@@ -27,6 +27,7 @@ export const store = reactive({
   robot: null,              // 机器人在 fixedFrame 下 {x, y, yaw}，由 MapView 每帧更新
   navStatus: { nav: null, wp: null },  // action 状态码
   cameraOpen: false,        // 相机浮窗
+  velOpen: false,           // 速度曲线浮窗
 })
 
 export function saveLayers() {

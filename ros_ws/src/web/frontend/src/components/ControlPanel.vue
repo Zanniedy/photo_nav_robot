@@ -48,6 +48,23 @@
 
     <section>
       <h4>导航</h4>
+      <!-- 按点名搜索并导航：回车 = 唯一匹配或同名点，点列表项直接去 -->
+      <div class="line goto-pt">
+        <input v-model="ptQuery" :disabled="!annot.map" :placeholder="annot.map ? `搜索点位（${annot.points.length} 个）回车导航` : '进入导航模式后可按点名导航'"
+               aria-label="搜索点位并导航" @keydown.enter.prevent="gotoQuery" @keydown.esc="ptQuery = ''" />
+        <button class="sm" :disabled="!ptMatches.length || mode !== 'navigation'" @click="gotoQuery" title="导航到匹配的点">🎯 去</button>
+      </div>
+      <div v-if="ptQuery && annot.map" class="pt-list">
+        <div v-if="!ptMatches.length" class="small muted">没有匹配「{{ ptQuery }}」的点</div>
+        <button v-for="p in ptMatches.slice(0, 8)" :key="p.id" class="pt-item" :class="{ on: p.id === annot.selectedPoint }"
+                :disabled="mode !== 'navigation'" @click="gotoPoint(p)" @mouseenter="annot.selectedPoint = p.id"
+                :title="`导航到 ${p.name} (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`">
+          <span class="name">{{ p.name }}</span>
+          <span v-if="p.note" class="muted small">{{ p.note }}</span>
+          <span class="muted small mono">({{ p.x.toFixed(1) }}, {{ p.y.toFixed(1) }})</span>
+        </button>
+        <div v-if="ptMatches.length > 8" class="small muted">还有 {{ ptMatches.length - 8 }} 个，继续输入缩小范围</div>
+      </div>
       <div class="line">
         <button @click="store.tool = 'initpose'" :class="{ on: store.tool === 'initpose' }">📍 设初始位姿</button>
         <button @click="store.tool = 'goal'" :class="{ on: store.tool === 'goal' }">🎯 点选目标</button>
@@ -89,6 +106,29 @@ import { api } from '../lib/api.js'
 import { publish, quatOf } from '../lib/ros.js'
 import { store, run, refreshMaps, toast, mapName } from '../lib/store.js'
 import Teleop from './Teleop.vue'
+import { annot, gotoPoints } from '../lib/annot.js'
+
+// ---------- 按点名导航 ----------
+const ptQuery = ref('')
+const ptMatches = computed(() => {
+  const q = ptQuery.value.trim().toLowerCase()
+  if (!q) return []
+  const hit = annot.points.filter((p) => p.name.toLowerCase().includes(q) || (p.note || '').toLowerCase().includes(q))
+  // 名字完全相同 > 名字前缀 > 其它包含
+  const rank = (p) => (p.name.toLowerCase() === q ? 0 : p.name.toLowerCase().startsWith(q) ? 1 : 2)
+  return hit.sort((a, b) => rank(a) - rank(b))
+})
+async function gotoPoint(p) {
+  annot.selectedPoint = p.id
+  if (await gotoPoints([p.name])) ptQuery.value = ''
+}
+function gotoQuery() {
+  const m = ptMatches.value
+  const q = ptQuery.value.trim().toLowerCase()
+  const exact = m.find((p) => p.name.toLowerCase() === q)
+  if (exact || m.length === 1) gotoPoint(exact || m[0])
+  else if (m.length > 1) toast(`匹配到 ${m.length} 个点，点列表里选一个`)
+}
 
 const mode = computed(() => store.status.mode)
 const saveName = ref('')
@@ -193,6 +233,10 @@ async function runWaypoints() {
 </script>
 
 <style scoped>
+.goto-pt input { flex: 1; }
+.pt-list { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 6px; }
+.pt-item { display: flex; gap: 8px; align-items: baseline; text-align: left; padding: 3px 8px; }
+.pt-item .name { font-weight: 500; }
 .star { padding: 0 6px; color: var(--muted); }
 .star.on { color: var(--warn); background: transparent; border-color: var(--line); }
 </style>
