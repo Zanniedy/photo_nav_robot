@@ -1,0 +1,17 @@
+# 走到人面前：锁定一个人（默认离机器人最近的），导航到「机器人→人」连线上离人 distance 米处，车头朝人。
+# 导航过程中持续跟踪，人移动超过 replan_dist 会更新目标点。
+#   ros2 action send_goal /person/approach robot_interfaces/action/ApproachPerson "{distance: 3.0}" --feedback
+
+float32 distance        # 停在离人多远，<=0 用节点参数 approach_distance（默认 3.0m）
+float32 timeout         # 整个动作的超时 s，<=0 不限
+float32 search_timeout  # 一开始等待看到人的时间 s，<=0 用节点参数（默认 5s）
+---
+bool success
+string message
+geometry_msgs/PoseStamped person   # 结束时人的位置（跟踪系，一般是 map）
+float32 distance                   # 结束时机器人到人的距离
+---
+string state                       # searching | approaching | arrived | lost
+int32 target_id
+geometry_msgs/PoseStamped person
+float32 distance
