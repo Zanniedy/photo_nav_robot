@@ -1,0 +1,7 @@
+# 导航到点位。names 一个 → NavigateToPose；多个 → 按顺序 FollowWaypoints
+# map 必须为空或等于当前导航地图（点位坐标属于那张地图）
+string map
+string[] names
+---
+bool success
+string message

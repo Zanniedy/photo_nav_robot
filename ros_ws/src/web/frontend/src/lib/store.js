@@ -5,7 +5,7 @@ import { subscribe } from './ros.js'
 
 const LAYERS_KEY = 'robot-ui-layers'
 function loadLayers() {
-  const def = { map: true, globalCost: false, localCost: true, scan: true, plan: true, trail: true, grid: true }
+  const def = { map: true, globalCost: false, localCost: true, scan: true, plan: true, trail: true, grid: true, shapes: true, points: true }
   try { return { ...def, ...JSON.parse(localStorage.getItem(LAYERS_KEY) || '{}') } } catch { return def }
 }
 
@@ -16,7 +16,8 @@ export const store = reactive({
   maps: [],
   busy: '',                 // 正在执行的操作，用于禁用按钮
   toast: null,              // {text, kind}
-  tool: 'pan',              // pan | initpose | goal | waypoint
+  tool: 'pan',              // pan | initpose | goal | waypoint | draw | select | erase | point
+  drawType: 'line',         // draw 工具下的形状，见 annot.js SHAPE_TYPES
   refine: true,             // 初始位姿是否走 relocalize_node 精配
   fixedFrame: 'map',
   follow: false,
@@ -25,6 +26,7 @@ export const store = reactive({
   goal: null,               // 最近发出的单点目标
   robot: null,              // 机器人在 fixedFrame 下 {x, y, yaw}，由 MapView 每帧更新
   navStatus: { nav: null, wp: null },  // action 状态码
+  cameraOpen: false,        // 相机浮窗
 })
 
 export function saveLayers() {

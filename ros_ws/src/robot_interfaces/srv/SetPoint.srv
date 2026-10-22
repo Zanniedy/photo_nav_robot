@@ -1,0 +1,7 @@
+# 新增或修改点位：按 point.name 查找，存在则更新坐标/备注，否则新建
+string map
+robot_interfaces/NamedPoint point
+---
+bool success
+string message
+robot_interfaces/NamedPoint point

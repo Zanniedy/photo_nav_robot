@@ -1,0 +1,21 @@
+# 机器人前置 USB 相机（AX USB2.0）。用 by-id 路径，不随 video0/video1 编号变化
+# 同一个相机会出两个节点：video-index0 是图像流，index1 是元数据节点（打不开图像）
+camera_node:
+  ros__parameters:
+    device: /dev/v4l/by-id/usb-AX_USB2.0_AX_USB2.0-video-index0
+    width: 1280
+    height: 720
+    fps: 30
+    frame_id: camera_optical_frame
+    camera_info_file: ~/max_robot/calib/camera_info.yaml   # 网页标定保存到这里，节点自动重载
+    preview_fps: 10.0
+    preview_quality: 70
+    capture_dir: ~/max_robot/captures   # 网页「拍照」存这里（全分辨率原图），后端 captures_dir 要一致
+
+calib_node:
+  ros__parameters:
+    board: 8x11          # 内角点 列x行
+    square: 0.025        # 方格边长 m
+    min_frames: 20
+    camera_name: front_camera
+    output_file: ~/max_robot/calib/camera_info.yaml

@@ -141,10 +141,19 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.3     # 定位器换好后再收紧到 0.2
       yaw_goal_tolerance: 0.3
+    # RotationShim 包 MPPI：和路径朝向偏差 > angular_dist_threshold 时先以固定角速度原地转正，再交给 MPPI。
+    # 不加时 MPPI 自己处理大角度转向：采样少(600)+单次迭代+bridge 转向死区(<0.45rad/s 被抬到 0.45)+0.1~0.35s 滞后，
+    # wz 正负来回跳，表现为"左转一下右转一下"地搜索。MPPI 参数仍在 FollowPath 命名空间下
+    FollowPath:
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "nav2_mppi_controller::MPPIController"
+      angular_dist_threshold: 0.6           # ~35°
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.8    # 过死区且 ICP 跟得上；u≈0.26
+      max_angular_accel: 2.0                # 与 bridge cmd_wz_acc 一致
+      simulate_ahead_time: 1.0
     # MPPI：采样式 MPC，差速模型前向预测 time_steps*model_dt = 4s。ARM(A55) 上采样规模压到 600 条
     # 底盘：MCU 接收摇杆量 [-1,1]，比例控制（有死区），robot_bridge 平滑 + 标定换算
-    FollowPath:
-      plugin: "nav2_mppi_controller::MPPIController"
       motion_model: "DiffDrive"
       time_steps: 40
       model_dt: 0.1                 # 与 controller_frequency 10Hz 一致
@@ -227,7 +236,7 @@ controller_server:
       # 不用 VelocityDeadbandCritic：它对 |v| < 死区（含 v=0）都罚，转向死区 0.45 会逼 MPPI 一直转圈。
       # 死区由 robot_bridge 补偿（非零小指令映射到刚过死区）
 
-    # 旧 RotationShim + RPP 配置，未启用。切回：controller_plugins 不变，把上面 FollowPath 改名、这里改成 FollowPath
+    # 旧 RotationShim + RPP 配置，未启用。切回：把上面 FollowPath 的 primary_controller 改成 RPP 并合入下面参数
     FollowPathRPP:
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"

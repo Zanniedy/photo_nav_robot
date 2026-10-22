@@ -1,0 +1,29 @@
+# hb_mapper makertbin 配置（RDK X5，BPU 架构 bayes-e）
+# convert.sh 会把 {ONNX} {PREFIX} {CALIB} {WORKDIR} 替换成实际值
+model_parameters:
+  onnx_model: '{ONNX}'
+  march: 'bayes-e'
+  working_dir: '{WORKDIR}'
+  output_model_file_prefix: '{PREFIX}'
+  layer_out_dump: False
+
+input_parameters:
+  input_name: ''
+  # 板端喂 nv12（相机/硬件 JPEG 解码直接出 nv12，省掉 CPU 颜色转换）；训练时是 RGB NCHW
+  input_type_rt: 'nv12'
+  input_type_train: 'rgb'
+  input_layout_train: 'NCHW'
+  norm_type: 'data_scale'
+  scale_value: 0.003921568627451   # 1/255
+
+calibration_parameters:
+  cal_data_dir: '{CALIB}'
+  cal_data_type: 'float32'
+  calibration_type: 'default'
+  # 精度不够时可以试: calibration_type: 'max'，或把 Softmax/MatMul 留在 CPU 上算
+  # run_on_cpu: '/model.10/m/m.0/attn/Softmax'
+
+compiler_parameters:
+  compile_mode: 'latency'
+  optimize_level: 'O3'
+  debug: False

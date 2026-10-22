@@ -96,3 +96,12 @@ export function yawOf(q) {
 export function quatOf(yaw) {
   return { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) }
 }
+
+/** 调 ROS 服务，返回 Promise<response> */
+export function callService(name, type, req = {}) {
+  return new Promise((resolve, reject) => {
+    if (!rosState.connected) { reject(new Error('rosbridge 未连接')); return }
+    const srv = new ROSLIB.Service({ ros, name, serviceType: type })
+    srv.callService(new ROSLIB.ServiceRequest(req), resolve, (e) => reject(new Error(String(e))))
+  })
+}

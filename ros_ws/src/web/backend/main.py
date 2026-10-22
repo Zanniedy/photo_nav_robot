@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 import auth, process_mgr
 from config import AUTOSTART, PROCESSES
-from routers import commands, diag, rosproxy, stack
+from routers import annotations, captures, commands, diag, rosproxy, stack
 
 
 def _autostart():
@@ -40,6 +40,8 @@ async def require_login(request: Request, call_next):
 app.include_router(auth.router)
 app.include_router(rosproxy.router)
 app.include_router(stack.router)
+app.include_router(annotations.router)
+app.include_router(captures.router)
 app.include_router(commands.router)
 app.include_router(diag.router)
 

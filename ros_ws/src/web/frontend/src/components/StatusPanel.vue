@@ -75,9 +75,12 @@ const RESTART_TIP = {
   base: '底盘/雷达/lio/ekf 全部重启，导航中需要重新给初始位姿',
   slam: '重启 slam_toolbox，未保存的地图会丢失',
   nav: '重启 nav2 + 定位（保持当前地图，有保存的初始位姿会自动发送）',
+  points: '重启点位 ROS 服务 /points/*',
+  camera: '重启相机节点',
+  calib: '重启标定节点，已采集的帧会丢失',
 }
 // nav/slam 需要启动过（有命令和地图）才能重启
-const canRestart = (name, p) => ['rosbridge', 'base'].includes(name) || !!p.cmd
+const canRestart = (name, p) => ['rosbridge', 'base', 'points', 'camera', 'calib'].includes(name) || !!p.cmd
 async function restart(name) {
   if (name === 'slam' && !confirm('重启建图会丢失未保存的地图，继续？')) return
   await run(`重启 ${name}`, () => api.procRestart(name))

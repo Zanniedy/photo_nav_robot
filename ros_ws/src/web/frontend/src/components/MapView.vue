@@ -2,12 +2,25 @@
   <div class="view" ref="wrap">
     <canvas ref="cv"
             @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp"
-            @wheel.prevent="onWheel" @contextmenu.prevent />
+            @wheel.prevent="onWheel" @contextmenu.prevent @dblclick="onDblClick" />
 
     <div class="toolbar">
       <div class="group">
         <button v-for="t in TOOLS" :key="t.id" :class="{ on: store.tool === t.id }"
                 :title="t.tip" @click="store.tool = t.id">{{ t.label }}</button>
+      </div>
+      <div class="group">
+        <button v-for="t in ANNOT_TOOLS" :key="t.id" :class="{ on: store.tool === t.id }"
+                :title="t.tip" @click="store.tool = t.id">{{ t.label }}</button>
+      </div>
+      <div v-if="store.tool === 'draw'" class="group shapes-pick">
+        <button v-for="t in SHAPE_TYPES" :key="t.id" :class="{ on: store.drawType === t.id }"
+                :title="t.label" :aria-label="t.label" @click="setDrawType(t.id)">{{ t.icon }}</button>
+        <input type="color" v-model="annot.style.color" title="颜色" aria-label="颜色" />
+        <select v-model.number="annot.style.width" title="线宽" aria-label="线宽">
+          <option v-for="w in [1, 2, 3, 5, 8]" :key="w" :value="w">{{ w }}px</option>
+        </select>
+        <label class="chk inline" title="闭合形状填充"><input type="checkbox" v-model="annot.style.fill" /> 填充</label>
       </div>
       <label v-if="store.tool === 'initpose'" class="chk" title="经 relocalize_node 扫描精配后再发 /initialpose">
         <input type="checkbox" v-model="store.refine" /> 精配
@@ -36,6 +49,7 @@
       <span v-if="cursor">光标 ({{ cursor.x.toFixed(2) }}, {{ cursor.y.toFixed(2) }})</span>
       <span>{{ (100 / view.scale).toFixed(1) }} cm/px</span>
       <span v-if="!robotVisible" class="warn">查不到 {{ store.fixedFrame }} → base_footprint</span>
+      <span v-if="annot.saving">保存中…</span><span v-else-if="annot.dirty" class="warn">未保存</span>
     </div>
     <div v-if="!rosState.connected" class="center-msg">等待 rosbridge 连接 {{ rosState.url }} …</div>
     <div v-if="dragHint" class="drag-hint">{{ dragHint }}</div>
@@ -48,12 +62,20 @@ import { rosState, subscribe, publish, yawOf, quatOf } from '../lib/ros.js'
 import { lookup, compose, apply, frames } from '../lib/tf.js'
 import { gridToCanvas, mapColor, costColor } from '../lib/grid.js'
 import { store, saveLayers, toast } from '../lib/store.js'
+import { annot, SHAPE_TYPES, addShape, updateShape, removeShape, beginEdit, addPoint, editPoint, deletePoint, undo } from '../lib/annot.js'
+import { drawShape, drawPoint, hitShape, hitPoint } from '../lib/draw.js'
 
 const TOOLS = [
   { id: 'pan', label: '✋ 平移', tip: '左键拖动平移，滚轮缩放（任何工具下右键也可平移）' },
   { id: 'initpose', label: '📍 初始位姿', tip: '按下定位置，拖动定朝向 → /initialpose' },
   { id: 'goal', label: '🎯 导航目标', tip: '按下定位置，拖动定朝向 → /goal_pose' },
   { id: 'waypoint', label: '➕ 航点', tip: '添加航点，在右侧面板执行' },
+]
+const ANNOT_TOOLS = [
+  { id: 'draw', label: '✏️ 绘图', tip: '在当前地图上画标注，自动保存。折线/多边形：单击加点，双击或回车结束，Esc 取消' },
+  { id: 'point', label: '📌 标点', tip: '按下定位置，拖动定朝向，然后输入点名' },
+  { id: 'select', label: '⬚ 选择', tip: '点选形状/点位，拖动移动，Delete 删除，Ctrl+Z 撤销' },
+  { id: 'erase', label: '🧽 擦除', tip: '点击形状删除（点位会先确认）' },
 ]
 const LAYERS = [
   { id: 'grid', label: '1m 网格', color: '#556' },
@@ -63,6 +85,8 @@ const LAYERS = [
   { id: 'scan', label: '激光 /scan', color: '#f44', topic: '/scan' },
   { id: 'plan', label: '路径 /plan', color: '#4f4', topic: '/plan' },
   { id: 'trail', label: '轨迹', color: '#fa0' },
+  { id: 'shapes', label: '绘图标注', color: '#fc0' },
+  { id: 'points', label: '点位', color: '#2ee6a6' },
 ]
 const ROBOT_RADIUS = 0.28
 
@@ -139,9 +163,12 @@ onMounted(() => {
 })
 
 onUnmounted(() => { cancelAnimationFrame(raf); unsubs.forEach((u) => u()) })
+onMounted(() => window.addEventListener('keydown', onKey))
+onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 watch(() => store.fixedFrame, () => { trail = []; dirty = true })
-watch(() => [store.layers, store.waypoints, store.goal, store.tool], () => { dirty = true }, { deep: true })
+watch(() => [store.layers, store.waypoints, store.goal, store.tool, store.drawType], () => { dirty = true; if (store.tool !== 'draw') cancelDraft() }, { deep: true })
+watch(() => [annot.shapes, annot.points, annot.selected, annot.selectedPoint], () => { dirty = true }, { deep: true })
 
 // 第一次收到地图时自动缩放到全图
 watch(() => rosState.connected, () => { firstMap = true })
@@ -191,30 +218,155 @@ function onWheel(e) {
 }
 
 // ---------- 鼠标工具 ----------
-let drag = null   // {kind:'pan'|'pose', sx, sy, cx, cy, start:{x,y}, cur:{x,y}}
+// drag.kind: pan | pose(初始位姿/目标/航点/标点) | shape(两点形状/手绘) | move(选择后拖动)
+let drag = null
+let draft = null   // 折线/多边形绘制中 {type, pts:[[x,y]...]}（map 系）
+const MIN_DRAG_PX = 4
+
+/** 屏幕 px → map 系；查不到 map TF 返回 null */
+function screenToMap(sx, sy) {
+  const w = s2w(sx, sy)
+  if (store.fixedFrame === 'map') return [w.x, w.y]
+  const T = lookup('map', store.fixedFrame)
+  return T ? apply(T, w.x, w.y) : null
+}
+/** map 系 → 屏幕 px 的函数；查不到返回 null */
+function mapToScreenFn() {
+  const T = lookup(store.fixedFrame, 'map')
+  if (!T) return null
+  const f = (x, y) => { const [wx, wy] = apply(T, x, y); return w2s(wx, wy) }
+  f.yaw = (yaw) => -(yaw + T.yaw)
+  return f
+}
+
+function setDrawType(t) { cancelDraft(); store.drawType = t }
+function cancelDraft() { if (draft) { draft = null; dirty = true } }
+function finishDraft() {
+  if (!draft) return
+  const need = draft.type === 'polygon' ? 3 : 2
+  if (draft.pts.length >= need) addShape({ type: draft.type, pts: draft.pts })
+  draft = null
+  dirty = true
+}
+
+/** 屏幕位置下最上层的点位/形状 */
+function pick(sx, sy) {
+  const toS = mapToScreenFn()
+  if (!toS) return null
+  if (store.layers.points) {
+    for (let i = annot.points.length - 1; i >= 0; i--) if (hitPoint(annot.points[i], toS, sx, sy)) return { kind: 'point', item: annot.points[i] }
+  }
+  if (store.layers.shapes) {
+    const ctx = cv.value.getContext('2d')
+    for (let i = annot.shapes.length - 1; i >= 0; i--) {
+      const s = annot.shapes[i]
+      if (!s.hidden && hitShape(ctx, s, toS, sx, sy)) return { kind: 'shape', item: s }
+    }
+  }
+  return null
+}
+
+function needMap() {
+  if (!annot.map) { toast('标注绑定到地图：先进入导航模式', 'error'); return false }
+  if (!mapToScreenFn()) { toast('查不到 map TF', 'error'); return false }
+  return true
+}
 
 function onDown(e) {
   const [sx, sy] = evtPos(e)
-  cv.value.setPointerCapture(e.pointerId)
   if (e.button === 1 || e.button === 2 || (e.button === 0 && store.tool === 'pan')) {
+    cv.value.setPointerCapture(e.pointerId)
     drag = { kind: 'pan', sx, sy, cx: view.cx, cy: view.cy }
     store.follow = false
-  } else if (e.button === 0) {
-    const p = s2w(sx, sy)
-    drag = { kind: 'pose', start: p, cur: p, sx, sy }
-    dragHint.value = '拖动设置朝向，松开确认'
+    return
   }
+  if (e.button !== 0) return
+  const tool = store.tool
+  if (['draw', 'point', 'select', 'erase'].includes(tool) && !needMap()) return
+  const mp = screenToMap(sx, sy)
+
+  if (tool === 'select') {
+    const hit = pick(sx, sy)
+    annot.selected = hit?.kind === 'shape' ? hit.item.id : null
+    annot.selectedPoint = hit?.kind === 'point' ? hit.item.id : null
+    if (hit) {
+      cv.value.setPointerCapture(e.pointerId)
+      if (hit.kind === 'shape') beginEdit()
+      drag = { kind: 'move', hit, start: mp, orig: hit.kind === 'shape' ? hit.item.pts.map((p) => [...p]) : { x: hit.item.x, y: hit.item.y }, sx, sy, moved: false }
+    }
+    dirty = true
+    return
+  }
+  if (tool === 'erase') {
+    const hit = pick(sx, sy)
+    if (hit?.kind === 'shape') removeShape(hit.item.id)
+    else if (hit?.kind === 'point' && confirm(`删除点位「${hit.item.name}」？`)) deletePoint(hit.item.id)
+    return
+  }
+  if (tool === 'draw') {
+    const t = store.drawType
+    if (t === 'polyline' || t === 'polygon') {
+      if (!draft) draft = { type: t, pts: [] }
+      // 多边形点回起点附近结束
+      const toS = mapToScreenFn()
+      if (t === 'polygon' && draft.pts.length >= 3) {
+        const [fx, fy] = toS(...draft.pts[0])
+        if (Math.hypot(fx - sx, fy - sy) < 10) { finishDraft(); return }
+      }
+      draft.pts.push(mp)
+      dirty = true
+      return
+    }
+    if (t === 'text') {
+      const text = prompt('文字内容')
+      if (text && text.trim()) addShape({ type: 'text', pts: [mp], text: text.trim().slice(0, 200) })
+      return
+    }
+    cv.value.setPointerCapture(e.pointerId)
+    drag = { kind: 'shape', type: t, pts: [mp, mp], sx, sy }
+    return
+  }
+  // initpose / goal / waypoint / point：按下定位置，拖动定朝向
+  cv.value.setPointerCapture(e.pointerId)
+  const p = s2w(sx, sy)
+  drag = { kind: 'pose', start: p, cur: p, sx, sy }
+  dragHint.value = '拖动设置朝向，松开确认'
 }
 
 function onMove(e) {
   const [sx, sy] = evtPos(e)
   cursor.value = s2w(sx, sy)
+  if (draft) dirty = true   // 预览线跟着光标
   if (!drag) return
   if (drag.kind === 'pan') {
     view.cx = drag.cx - (sx - drag.sx) / view.scale
     view.cy = drag.cy + (sy - drag.sy) / view.scale
-  } else {
+  } else if (drag.kind === 'pose') {
     drag.cur = s2w(sx, sy)
+  } else if (drag.kind === 'shape') {
+    const mp = screenToMap(sx, sy)
+    if (!mp) return
+    if (drag.type === 'freehand') {
+      // 屏幕上移动超过 3px 才记一个点，控制点数
+      const toS = mapToScreenFn()
+      const [lx, ly] = toS(...drag.pts[drag.pts.length - 1])
+      if (Math.hypot(lx - sx, ly - sy) > 3) drag.pts.push(mp)
+    } else {
+      drag.pts[1] = mp
+    }
+  } else if (drag.kind === 'move') {
+    const mp = screenToMap(sx, sy)
+    if (!mp || !drag.start) return
+    if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) < MIN_DRAG_PX) return
+    drag.moved = true
+    const dx = mp[0] - drag.start[0], dy = mp[1] - drag.start[1]
+    if (drag.hit.kind === 'shape') {
+      updateShape(drag.hit.item.id, { pts: drag.orig.map(([x, y]) => [x + dx, y + dy]) }, { undoable: false })
+    } else {
+      // 点位拖动只改本地显示，松手再写后端
+      drag.hit.item.x = drag.orig.x + dx
+      drag.hit.item.y = drag.orig.y + dy
+    }
   }
   dirty = true
 }
@@ -225,15 +377,71 @@ function onUp(e) {
   drag = null
   dragHint.value = ''
   dirty = true
-  if (d.kind !== 'pose' || e.type === 'pointercancel') return
+  if (e.type === 'pointercancel') {
+    if (d.kind === 'move' && d.hit.kind === 'point') Object.assign(d.hit.item, d.orig)
+    return
+  }
   const [sx, sy] = evtPos(e)
   const moved = Math.hypot(sx - d.sx, sy - d.sy) > 8
+
+  if (d.kind === 'shape') {
+    if (d.type === 'freehand' ? d.pts.length >= 2 : moved) addShape({ type: d.type, pts: d.pts })
+    return
+  }
+  if (d.kind === 'move') {
+    if (d.moved && d.hit.kind === 'point') editPoint(d.hit.item.id, { x: d.hit.item.x, y: d.hit.item.y })
+    return
+  }
+  if (d.kind !== 'pose') return
   let yaw
   if (moved) yaw = Math.atan2(d.cur.y - d.start.y, d.cur.x - d.start.x)
-  else if (store.robot && store.tool !== 'initpose')   // 点一下：朝向沿机器人→目标
+  else if (store.robot && store.tool !== 'initpose' && store.tool !== 'point')   // 点一下：朝向沿机器人→目标
     yaw = Math.atan2(d.start.y - store.robot.y, d.start.x - store.robot.x)
   else yaw = store.robot ? store.robot.yaw : 0
   firePose(d.start.x, d.start.y, yaw)
+}
+
+function onDblClick() {
+  if (draft) {
+    // 双击的第二下已经加了一个重复点，去掉
+    const n = draft.pts.length
+    if (n >= 2) {
+      const [a, b] = [draft.pts[n - 1], draft.pts[n - 2]]
+      if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) draft.pts.pop()
+    }
+    finishDraft()
+  } else if (store.tool === 'select' && annot.selectedPoint) {
+    renamePoint(annot.points.find((p) => p.id === annot.selectedPoint))
+  } else if (store.tool === 'select' && annot.selected) {
+    const s = annot.shapes.find((x) => x.id === annot.selected)
+    if (s?.type === 'text') {
+      const t = prompt('文字内容', s.text)
+      if (t != null && t.trim()) updateShape(s.id, { text: t.trim().slice(0, 200) })
+    }
+  }
+}
+
+async function renamePoint(p) {
+  if (!p) return
+  const name = prompt('点名', p.name)
+  if (name != null && name.trim() && name.trim() !== p.name) await editPoint(p.id, { name: name.trim() })
+}
+
+function isTyping(e) { return ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) }
+function onKey(e) {
+  if (isTyping(e)) return
+  if (e.key === 'Escape') { cancelDraft(); annot.selected = annot.selectedPoint = null; dirty = true }
+  else if (e.key === 'Enter' && draft) { e.preventDefault(); finishDraft() }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && store.tool === 'select') {
+    if (annot.selected) { e.preventDefault(); removeShape(annot.selected) }
+    else if (annot.selectedPoint) {
+      const p = annot.points.find((x) => x.id === annot.selectedPoint)
+      if (p && confirm(`删除点位「${p.name}」？`)) deletePoint(p.id)
+    }
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault()
+    if (!undo()) toast('没有可撤销的绘图操作')
+  }
 }
 
 /** fixedFrame 下的位姿 → map 系（查不到就原样，frame 用 fixedFrame） */
@@ -266,6 +474,10 @@ function firePose(x, y, yaw) {
   } else if (store.tool === 'waypoint') {
     if (p.frame !== 'map') { toast('航点必须在 map 系', 'error'); return }
     store.waypoints.push({ x: p.x, y: p.y, yaw: p.yaw })
+  } else if (store.tool === 'point') {
+    if (p.frame !== 'map') { toast('点位必须在 map 系', 'error'); return }
+    const name = prompt(`点名（${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${deg}°）`, `P${annot.points.length + 1}`)
+    if (name && name.trim()) addPoint({ name: name.trim(), x: p.x, y: p.y, yaw: p.yaw }).then((r) => { if (r) annot.selectedPoint = r.id })
   }
 }
 
@@ -405,6 +617,19 @@ function waypointsInFixed() {
   return (p) => compose(T, p)
 }
 
+/** 正在画的形状预览 */
+function drawAnnotPreview(ctx, toS) {
+  const base = { ...annot.style, id: '_', text: '' }
+  if (drag && drag.kind === 'shape') drawShape(ctx, { ...base, type: drag.type, pts: drag.pts }, toS, false)
+  if (draft && draft.pts.length) {
+    const cur = cursor.value && screenToMap(...w2s(cursor.value.x, cursor.value.y))
+    const pts = cur ? [...draft.pts, cur] : draft.pts
+    drawShape(ctx, { ...base, type: draft.type === 'polygon' && pts.length >= 3 ? 'polygon' : 'polyline', pts }, toS, false)
+    ctx.fillStyle = '#fff'
+    draft.pts.forEach(([x, y]) => { const [a, b] = toS(x, y); ctx.fillRect(a - 2.5, b - 2.5, 5, 5) })
+  }
+}
+
 function draw() {
   const ctx = cv.value.getContext('2d')
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -440,6 +665,15 @@ function draw() {
   }
   if (L.scan) drawScan(ctx)
 
+  const toS = mapToScreenFn()
+  if (toS && L.shapes) {
+    annot.shapes.forEach((sh) => { if (!sh.hidden) drawShape(ctx, sh, toS, sh.id === annot.selected) })
+  }
+  if (toS) drawAnnotPreview(ctx, toS)
+  if (toS && L.points) {
+    annot.points.forEach((pt, i) => drawPoint(ctx, pt, toS, toS.yaw, pt.id === annot.selectedPoint, i))
+  }
+
   const fromMap = waypointsInFixed()
   if (fromMap) {
     if (store.waypoints.length) {
@@ -461,7 +695,7 @@ function draw() {
   if (robot) drawRobot(ctx, robot)
 
   if (drag && drag.kind === 'pose') {
-    const color = { initpose: '#3ef06a', goal: '#ff3d7f', waypoint: '#c878ff' }[store.tool]
+    const color = { initpose: '#3ef06a', goal: '#ff3d7f', waypoint: '#c878ff', point: '#2ee6a6' }[store.tool]
     const yaw = Math.atan2(drag.cur.y - drag.start.y, drag.cur.x - drag.start.x)
     const len = Math.hypot(drag.cur.y - drag.start.y, drag.cur.x - drag.start.x)
     drawArrow(ctx, drag.start.x, drag.start.y, yaw, color, Math.max(len, 0.3))
@@ -481,9 +715,13 @@ canvas { display: block; touch-action: none; cursor: crosshair; }
 .layers { position: absolute; top: 36px; right: 0; display: flex; flex-direction: column; gap: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
 .layers .chk { border: 0; padding: 3px 4px; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.shapes-pick button { min-width: 30px; }
+.shapes-pick input[type=color] { width: 34px; padding: 0 2px; border: 0; border-right: 1px solid var(--line); border-radius: 0; height: auto; }
+.chk.inline { border: 0; border-radius: 0; }
 .rate { margin-left: auto; padding-left: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .hud { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 12px; font-size: 12px; color: var(--muted); background: rgba(20,22,30,0.75); padding: 3px 8px; border-radius: 4px; font-variant-numeric: tabular-nums; pointer-events: none; }
 .warn { color: var(--warn); }
-.center-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--muted); }
+.center-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--muted); pointer-events: none; }
+.view { user-select: none; }
 .drag-hint { position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.6); color: #ffd23f; padding: 4px 12px; border-radius: 6px; font-size: 12px; pointer-events: none; }
 </style>

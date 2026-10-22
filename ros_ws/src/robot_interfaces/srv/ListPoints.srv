@@ -1,0 +1,8 @@
+# 列出点位。map 为空 = 当前导航地图；query 为空 = 全部，否则按名字/备注子串过滤（不区分大小写）
+string map
+string query
+---
+bool success
+string message
+string map
+robot_interfaces/NamedPoint[] points

@@ -15,9 +15,14 @@ WORKSPACE_SETUP: str = _x(_cfg["workspace_setup"])
 # 兼容旧配置的单个 maps_dir
 MAP_DIRS: list[str] = [_x(d) for d in _cfg.get("map_dirs") or [_cfg.get("maps_dir", "~/maps")]]
 STATE_FILE: str = _x(_cfg.get("state_file", "~/.robot_ui_state.json"))
+ANNOT_DIR: str = _x(_cfg.get("annotations_dir", "~/max_robot/annotations"))
+# 相机照片目录，要和 person_locator/config/camera.yaml 的 capture_dir 一致
+CAPTURE_DIR: str = _x(_cfg.get("captures_dir", "~/max_robot/captures"))
 LOG_BUFFER_SIZE: int = int(_cfg.get("log_buffer_size", 2000))
 AUTOSTART: list[str] = list(_cfg.get("autostart", []))
-PROCESSES: dict[str, str] = dict(_cfg["processes"])
+# {web} → web 目录（backend 的上一级）
+WEB_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROCESSES: dict[str, str] = {k: v.replace("{web}", WEB_DIR) for k, v in _cfg["processes"].items()}
 ROSBRIDGE_URL: str = _cfg.get("rosbridge_url", "ws://127.0.0.1:9090")
 SERIAL_DEVICES: dict[str, str] = dict(_cfg.get("serial_devices", {}))
 

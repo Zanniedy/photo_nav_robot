@@ -1,0 +1,7 @@
+# 按名字或 id 查点位
+string map
+string name
+---
+bool success
+string message
+robot_interfaces/NamedPoint point

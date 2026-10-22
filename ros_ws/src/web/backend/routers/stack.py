@@ -9,7 +9,9 @@ from config import PROCESSES
 router = APIRouter(prefix="/api")
 
 # 前端展示顺序；waypoints 是 FollowWaypoints action 客户端进程
-PROC_NAMES = ["rosbridge", "base", "slam", "nav", "waypoints"]
+PROC_NAMES = ["rosbridge", "base", "slam", "nav", "waypoints", "points", "camera", "calib"]
+# 可以单独启动 / 按配置命令重启的进程（nav/slam/waypoints 走各自接口）
+STANDALONE = ("rosbridge", "base", "points", "camera", "calib")
 _state = {"map": None}       # 当前导航地图 id（yaml 绝对路径）
 
 
@@ -101,12 +103,22 @@ def _apply_saved_pose_async(map_id: str) -> None:
     threading.Thread(target=job, daemon=True).start()
 
 
+def set_current_map(map_id: str) -> None:
+    """当前导航地图：内存一份，state_file 一份给 points_server 读"""
+    _state["map"] = map_id
+    state.update(lambda d: d.__setitem__("current_map", map_id))
+
+
+def current_map() -> str | None:
+    return _state["map"] if process_mgr.is_running("nav") else None
+
+
 def start_nav(m: dict) -> None:
     process_mgr.stop("waypoints")
     process_mgr.stop("slam")
     _ensure_base()
     process_mgr.start("nav", PROCESSES["nav"].replace("{map}", shlex.quote(m["id"])))
-    _state["map"] = m["id"]
+    set_current_map(m["id"])
     _apply_saved_pose_async(m["id"])
 
 
@@ -137,8 +149,8 @@ def status():
 
 @router.post("/proc/{name}/start")
 def proc_start(name: str):
-    if name not in ("rosbridge", "base"):
-        raise HTTPException(400, "只能单独启动 rosbridge / base，建图导航用对应接口")
+    if name not in STANDALONE:
+        raise HTTPException(400, f"只能单独启动 {' / '.join(STANDALONE)}，建图导航用对应接口")
     process_mgr.start(name, PROCESSES[name])
     return {"ok": True}
 
@@ -148,7 +160,7 @@ def proc_restart(name: str):
     """按上次的启动命令重启（nav 保留当前地图）。base 重启后上层的定位需要重新给初始位姿"""
     if name not in PROC_NAMES or name == "waypoints":
         raise HTTPException(400, f"不能重启 {name}")
-    cmd = process_mgr.last_cmd(name) or (PROCESSES[name] if name in ("rosbridge", "base", "slam") else None)
+    cmd = process_mgr.last_cmd(name) or (PROCESSES[name] if name in STANDALONE + ("slam",) else None)
     if cmd is None:
         raise HTTPException(409, f"{name} 还没启动过")
     process_mgr.start(name, cmd)
@@ -183,14 +195,18 @@ def mapping_save(req: SaveReq):
     prefix = maps.save_prefix(req.name)
     r = process_mgr.run_once(
         ["ros2", "service", "call", "/slam_toolbox/save_map", "slam_toolbox/srv/SaveMap",
-         json.dumps({"name": {"data": prefix}})], timeout=20)
-    if "data=0" not in r["output"]:
+         json.dumps({"name": {"data": prefix}})], timeout=45)   # 内部起 map_saver_cli，ARM 上冷启动慢
+    # 响应形如 slam_toolbox.srv.SaveMap_Response(result=0)
+    if "result=0" not in r["output"]:
         raise HTTPException(500, "save_map 失败:\n" + r["output"][-800:])
-    # 顺带存 posegraph，以后想用 slam_toolbox localization 模式可以直接用
-    process_mgr.run_once(
+    # 顺带存 posegraph，以后想用 slam_toolbox localization 模式可以直接用；失败不影响地图本身
+    r2 = process_mgr.run_once(
         ["ros2", "service", "call", "/slam_toolbox/serialize_map",
-         "slam_toolbox/srv/SerializePoseGraph", json.dumps({"filename": prefix})], timeout=20)
-    return {"ok": True, "yaml": prefix + ".yaml"}
+         "slam_toolbox/srv/SerializePoseGraph", json.dumps({"filename": prefix})], timeout=45)
+    posegraph = "result=0" in r2["output"]
+    if not posegraph:
+        process_mgr.log("ui", "serialize_map 失败:\n" + r2["output"][-400:])
+    return {"ok": True, "yaml": prefix + ".yaml", "posegraph": posegraph}
 
 
 @router.post("/nav/start")
@@ -211,7 +227,7 @@ def nav_switch_map(req: MapReq):
     if "result=0" not in r["output"]:
         raise HTTPException(500, "load_map 失败:\n" + r["output"][-800:])
     process_mgr.stop("waypoints")
-    _state["map"] = m["id"]
+    set_current_map(m["id"])
     _apply_saved_pose_async(m["id"])
     return {"ok": True}
 

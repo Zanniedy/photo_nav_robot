@@ -44,10 +44,28 @@ journalctl -u max_nav_robot@$(whoami) -f
 - **默认地图 ★**：设了以后后端启动会自动进导航
 - **初始位姿**：地图上「📍 初始位姿」拖拽，或控制页输入坐标发送；「保存为该地图初始位姿」后，下次进导航自动发送
 - **导航目标**：「🎯 导航目标」点一下/拖朝向；或输坐标；多个航点用「➕ 航点」后执行
+- **绘图标注**：地图上方「✏️ 绘图」选形状（直线/箭头/折线/多边形/矩形/圆/手绘/文字）。折线、多边形单击加点，双击或回车结束；「⬚ 选择」拖动移动、Delete 删除、Ctrl+Z 撤销；「🧽 擦除」点击删除。自动保存，按地图分开存
+- **点位**：「📌 标点」在地图上点/拖朝向后命名，或在「标注」页输入坐标添加；可搜索、编辑、排序、删除，点 🎯 导航过去，多选后依次导航
 - **重启**：状态页每个进程有重启/停止按钮
 - **命令**：常用检查一键执行；也可输入 `ros2 topic|node|service|param|action|interface|lifecycle|pkg|doctor ...`（不开放 run/launch）
 
 视图：滚轮缩放，右键/中键拖动平移，空格急停，可勾选键盘 WASD 遥控。
+
+## 点位接口（给其他程序用）
+
+存储：`annotations_dir/<地图名>_<hash>.json`，网页和 ROS 节点共用。`map` 留空 = 当前导航地图。
+
+ROS（`points` 进程，需先编译 `robot_interfaces`）：
+
+```bash
+ros2 service call /points/list   robot_interfaces/srv/ListPoints  "{query: ''}"
+ros2 service call /points/get    robot_interfaces/srv/GetPoint    "{name: 门口}"
+ros2 service call /points/set    robot_interfaces/srv/SetPoint    "{point: {name: 门口, x: 1.0, y: 2.0, yaw: 0.0}}"
+ros2 service call /points/delete robot_interfaces/srv/DeletePoint "{name: 门口}"
+ros2 service call /points/goto   robot_interfaces/srv/GotoPoint   "{names: [门口, 厨房]}"   # 1 个点 NavigateToPose，多个 FollowWaypoints
+```
+
+REST（需登录 cookie）：`GET /api/points?q=`、`GET /api/points/{名字或id}`、`POST /api/points`、`PATCH /api/points/{key}`、`DELETE /api/points/{key}`、`POST /api/points_goto {"names": [...]}`
 
 ## 安全
 

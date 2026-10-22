@@ -1,11 +1,11 @@
-"""系统自检：串口设备 + 权限"""
+"""系统自检：串口 / 相机设备 + 权限"""
 import os
 from fastapi import APIRouter
 from config import SERIAL_DEVICES
 
 router = APIRouter(prefix="/api/diag")
 
-_LABELS = {"bridge": "下位机 (CH340)", "lidar": "激光雷达 (CP2102)"}
+_LABELS = {"bridge": "下位机 (CH340)", "lidar": "激光雷达 (CP2102)", "camera": "相机 (AX USB2.0)"}
 
 
 @router.get("")
@@ -18,7 +18,7 @@ def diag():
         elif not os.access(path, os.R_OK | os.W_OK):
             real = os.path.realpath(path)
             items.append({"label": label, "ok": False,
-                          "reason": f"{real} 无读写权限，把用户加入 dialout 组"})
+                          "reason": f"{real} 无读写权限，把用户加入 " + ("video" if key == "camera" else "dialout") + " 组"})
         else:
             items.append({"label": label, "ok": True, "reason": os.path.realpath(path)})
     return {"ok": all(i["ok"] for i in items), "items": items}
