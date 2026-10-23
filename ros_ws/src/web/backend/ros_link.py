@@ -62,10 +62,14 @@ class RosLink:
         self._speed_pub = self.node.create_publisher(SpeedLimit, "/speed_limit", 10)
         self._exec = MultiThreadedExecutor(num_threads=2)
         self._exec.add_node(self.node)
-        threading.Thread(target=self._exec.spin, daemon=True).start()
+        self._spin = threading.Thread(target=self._exec.spin, daemon=True)
+        self._spin.start()
 
     def shutdown(self) -> None:
+        # 先停 executor 让 spin() 返回，再 join 工作线程，最后销毁节点 / shutdown rclpy，
+        # 不然 daemon 线程还在 C 层转，解释器退出时会 abort
         self._exec.shutdown()
+        self._spin.join(timeout=2.0)
         self.node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

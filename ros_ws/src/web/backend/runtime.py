@@ -13,6 +13,7 @@ hub = EventHub()
 runner: TaskRunner | None = None
 nav = None
 _stop = threading.Event()
+_ticker_thread: threading.Thread | None = None
 
 
 class NullNav:
@@ -51,7 +52,9 @@ def start() -> None:
         link = NullNav()
     install(link, estopped=state.load()["estop"])
     _stop.clear()
-    threading.Thread(target=_ticker, daemon=True).start()
+    global _ticker_thread
+    _ticker_thread = threading.Thread(target=_ticker, daemon=True)
+    _ticker_thread.start()
 
 
 def _ticker() -> None:
@@ -64,6 +67,9 @@ def _ticker() -> None:
 
 def stop() -> None:
     _stop.set()
+    # 先 join ticker，避免正在跑的 tick 碰到已销毁的节点
+    if _ticker_thread is not None:
+        _ticker_thread.join(timeout=1.0)
     if runner is not None:
         runner.cancel_all("后端退出")
     if nav is not None and hasattr(nav, "shutdown"):
