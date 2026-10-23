@@ -113,6 +113,12 @@ def current_map() -> str | None:
     return _state["map"] if process_mgr.is_running("nav") else None
 
 
+def current_map_id() -> str | None:
+    """对外的当前地图 id（地图名），不在导航返回 None"""
+    cur = current_map()
+    return maps.name_of(cur) if cur else None
+
+
 def start_nav(m: dict) -> None:
     process_mgr.stop("waypoints")
     process_mgr.stop("slam")

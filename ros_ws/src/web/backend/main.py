@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-import auth, api_errors, process_mgr
+import auth, api_errors, process_mgr, runtime
 from config import AUTOSTART, PROCESSES
 from routers import annotations, captures, commands, diag, rosproxy, stack, v1_robot
 
@@ -18,8 +18,10 @@ def _autostart():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    runtime.start()          # 任务层先起来，autostart 进导航后就能接任务
     _autostart()
     yield
+    runtime.stop()
     # 后端退出时把自己拉起的 ROS 进程全部收掉，不留孤儿占串口
     process_mgr.stop_all()
 
