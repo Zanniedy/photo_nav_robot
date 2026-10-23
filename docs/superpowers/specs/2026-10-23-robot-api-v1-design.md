@@ -11,7 +11,7 @@
   api_tokens:                # 给平板 / 上层调用方，每个带名字，日志里记是谁调的
     - {name: "tablet", token: "<随机 32 字节>"}
   ```
-- 文件不存在：后端照常启动，`robot_id` 用 `unset-<hostname>`，`/api/v1/robot` 和状态里带 `configured: false`，网页顶栏提示去配置
+- 文件不存在：后端照常启动，`robot_id` 用 `unset-<hostname>`，`/api/v1/robot` 和状态里带 `configured: false`，网页状态页「机器人身份」显示未配置
 - 配置方式：网页状态页填 id 和名字（只在 `configured: false` 时允许改 id）；或 ssh 上去手写文件。token 由后端生成，只在生成时显示一次
 - 后续按 robot_id 区分的配置（云端地址、MQTT 账号）也写在这份文件里
 
@@ -62,7 +62,7 @@ moving ──发现人 / 上层调 wait──▶ waiting ──上层调 resume 
 - resume 后 `patrol.person_cooldown`（默认 30s）内不再因为发现人自动停
 - 取消巡航连同子任务一起结束；取消子任务巡航仍在 waiting
 
-### 安全检查（下发和每段导航开始前）
+### 安全检查（下发和 resume 前；导航中途停了由 tick 结束任务，急停直接取消任务）
 
 - 导航没启动 → `NAV_NOT_RUNNING`；建图模式 → `BUSY`
 - 定位分数 < `localization.min_score` → `LOCALIZATION_UNRELIABLE`。**阈值上车看过正常值后再定**，先默认 0（不检查）
@@ -83,7 +83,7 @@ moving ──发现人 / 上层调 wait──▶ waiting ──上层调 resume 
 
 | 接口 | 用途 |
 |---|---|
-| `GET /api/v1/robot` | `robot_id`、`name`、`configured`、软件版本（git 提交号） |
+| `GET /api/v1/robot` | `robot_id`、`name`、`configured`、接口版本 `api_version`（机器人上是 rsync 过去的代码，没有 .git） |
 | `PUT /api/v1/robot` | 改 `name`；`configured: false` 时可设 `robot_id` |
 | `POST /api/v1/robot/tokens`、`DELETE /api/v1/robot/tokens/{name}` | 生成 / 删除调用 token |
 | `GET /api/v1/status` | 位姿、模式、当前地图 `map_id`/`version`、定位分数和是否可靠、前台任务和巡航摘要、急停 |
@@ -116,7 +116,7 @@ moving ──发现人 / 上层调 wait──▶ waiting ──上层调 resume 
 - `task_runner`：`FakeNav`（手动控制到达 / 失败）+ 可注入时钟。覆盖多点 goto、失败、取消、preempt、巡航循环 / 单次、wait/resume、子任务后仍 waiting、超时、冷却期、急停、各安全检查
 - 接口：FastAPI `TestClient`，覆盖认证、错误码格式、robot 配置、点位 / 路线增删改、旧 `points_goto`
 - `robot_bridge` 急停 gtest
-- 本机系统 python 没有 fastapi：按 `requirements.txt` 建 `web/backend/.venv` 跑测试，不动系统和 conda
+- 本机系统 python 没有 fastapi：按 `requirements.txt` 在仓库根建 `.venv_web/` 跑测试（不放 `ros_ws/src` 下，免得被 rsync 到机器人），不动系统和 conda
 
 机器人上（要在线）：
 1. 写 `robot.yaml`，`GET /api/v1/robot` 返回正确 id；旧网页功能照常
