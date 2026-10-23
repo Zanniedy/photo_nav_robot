@@ -4,6 +4,7 @@
   name: "一号机"                  显示名，随时可改
   api_tokens: [{name, token}]    /api/v1 的 Bearer token（平板、上层调用方）
 文件不存在或坏了：robot_id = unset-<hostname>，configured = False，后端照常启动。
+坏了（解析不了 / 不是字典 / robot_id 不合法）时 broken = True，所有修改都拒绝，免得把原来的 id 和 token 冲掉。
 """
 import contextlib, copy, fcntl, hmac, os, re, secrets, socket
 import yaml
@@ -35,7 +36,7 @@ def _locked():
 
 def _default() -> dict:
     host = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().lower())[:24] or "robot"
-    return {"robot_id": f"unset-{host}", "name": "", "configured": False, "api_tokens": []}
+    return {"robot_id": f"unset-{host}", "name": "", "configured": False, "api_tokens": [], "broken": False}
 
 
 def _read() -> dict:
@@ -50,11 +51,15 @@ def _read() -> dict:
                 raw = yaml.safe_load(f) or {}
             if not isinstance(raw, dict):
                 raise ValueError
+            rid = str(raw.get("robot_id") or "")
+            if rid and not _ID_RE.match(rid):
+                raise ValueError
         except (OSError, ValueError, yaml.YAMLError):
-            return _default()                       # 文件坏了按没配置处理，不让后端起不来
+            # 文件坏了按没配置处理，不让后端起不来；但标上 broken，不许写回去
+            _cache.update(key=key, data={**_default(), "broken": True})
+            return copy.deepcopy(_cache["data"])
         d = _default()
-        rid = str(raw.get("robot_id") or "")
-        if _ID_RE.match(rid):
+        if rid:
             d.update(robot_id=rid, configured=True)
         d["name"] = str(raw.get("name") or "")
         d["api_tokens"] = [{"name": str(t["name"]), "token": str(t["token"])}
@@ -64,12 +69,18 @@ def _read() -> dict:
     return copy.deepcopy(_cache["data"])
 
 
+def _check_writable(d: dict) -> None:
+    if d["broken"]:
+        raise ConfigError("INTERNAL", f"robot.yaml 格式不对，先 ssh 上去修好：{ROBOT_FILE}")
+
+
 def _write(d: dict) -> None:
     out = {"name": d["name"], "api_tokens": d["api_tokens"]}
     if d["configured"]:
         out = {"robot_id": d["robot_id"], **out}
     tmp = ROBOT_FILE + ".tmp"
-    with open(tmp, "w") as f:
+    # 一创建就是 0600，不留别人可读的空档
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         yaml.safe_dump(out, f, allow_unicode=True, sort_keys=False)
     os.chmod(tmp, 0o600)                            # 里面有 token
     os.replace(tmp, ROBOT_FILE)
@@ -78,7 +89,8 @@ def _write(d: dict) -> None:
 
 def _public(d: dict) -> dict:
     return {"robot_id": d["robot_id"], "name": d["name"], "configured": d["configured"],
-            "api_version": API_VERSION, "tokens": [t["name"] for t in d["api_tokens"]]}
+            "api_version": API_VERSION, "tokens": [t["name"] for t in d["api_tokens"]],
+            "broken": d["broken"]}
 
 
 def load() -> dict:
@@ -97,6 +109,7 @@ def public_info() -> dict:
 def set_identity(robot_id: str | None = None, name: str | None = None) -> dict:
     with _locked():
         d = _read()
+        _check_writable(d)
         if robot_id is not None and not (d["configured"] and robot_id == d["robot_id"]):
             if d["configured"]:
                 raise ConfigError("ROBOT_NOT_CONFIGURED",
@@ -119,6 +132,7 @@ def create_token(name: str) -> str:
         raise ConfigError("BAD_REQUEST", "token 名只能用字母、数字、_ 和 -，1~32 个字符")
     with _locked():
         d = _read()
+        _check_writable(d)
         if any(t["name"] == name for t in d["api_tokens"]):
             raise ConfigError("BAD_REQUEST", f"token 名已存在: {name}")
         if len(d["api_tokens"]) >= MAX_TOKENS:
@@ -132,6 +146,7 @@ def create_token(name: str) -> str:
 def delete_token(name: str) -> bool:
     with _locked():
         d = _read()
+        _check_writable(d)
         n = len(d["api_tokens"])
         d["api_tokens"] = [t for t in d["api_tokens"] if t["name"] != name]
         if len(d["api_tokens"]) == n:

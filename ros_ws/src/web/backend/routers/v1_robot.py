@@ -53,7 +53,7 @@ def create_token(req: TokenReq, request: Request):
 @router.delete("/robot/tokens/{name}")
 def delete_token(name: str, request: Request):
     web_only(request)
-    if not robot_config.delete_token(name):
+    if not _cfg(robot_config.delete_token, name):
         raise ApiError("NOT_FOUND", f"token 不存在: {name}")
     process_mgr.log("ui", f"删除 API token: {name}")
     return ok()
