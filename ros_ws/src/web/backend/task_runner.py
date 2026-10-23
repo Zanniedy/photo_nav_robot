@@ -226,9 +226,10 @@ class TaskRunner:
     # ── 内部（调用方已持有 self._lock）──────────────────────────────────
 
     def _end_all(self, state: str, reason: str) -> None:
-        for t in (self._fg, self._patrol):     # 先前台再巡航
-            if t is not None and t.state not in TERMINAL:
-                self._finish(t, state, reason)
+        with self._lock:
+            for t in (self._fg, self._patrol):     # 先前台再巡航
+                if t is not None and t.state not in TERMINAL:
+                    self._finish(t, state, reason)
 
     def _active(self, task_id: str) -> Task:
         for t in (self._fg, self._patrol):
