@@ -30,3 +30,8 @@ _auth = _cfg.get("auth") or {}
 AUTH_USER: str = str(_auth.get("username", "max_robot"))
 AUTH_PASSWORD: str = str(_auth.get("password", ""))   # 空 = 不启用登录
 SESSION_HOURS: float = float(_auth.get("session_hours", 72))
+
+# 机器人身份（robot_id、name、api_tokens），每台一份，不进仓库，见 robot_config.py
+ROBOT_FILE: str = _x(_cfg.get("robot_file", "~/max_robot/robot.yaml"))
+# 任务层参数（task_runner.RunnerConfig 的字段）
+TASKS: dict = dict(_cfg.get("tasks") or {})

@@ -39,3 +39,4 @@ ros_ws/src/**/build/
 ros_ws/src/**/*.a
 ros_ws/src/**/*.so
 .superpowers/
+.venv_web/

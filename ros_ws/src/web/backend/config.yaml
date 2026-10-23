@@ -25,6 +25,19 @@ annotations_dir: "~/max_robot/annotations"
 # 网页相机「拍照」存的照片（camera_node 写入，要和 camera.yaml 的 capture_dir 一致）
 captures_dir: "~/max_robot/captures"
 
+# 机器人身份：robot_id、显示名、/api/v1 的 token。每台机器人一份，不进仓库（rsync 会覆盖本文件）
+robot_file: "~/max_robot/robot.yaml"
+
+# 任务层（/api/v1/tasks）
+tasks:
+  default_speed: 0.25     # 估算剩余时间用，和 nav2 vx_max 一致
+  guide_speed: 0.15       # guide 默认限速 m/s
+  min_score: 0.0          # 定位分数门限，0 = 不检查；上车看过 /localizer/score 正常值后再定
+  wait_on_person: false   # 巡航中发现人自动停下等待（人员检测实测通过后再开）
+  person_distance: 3.0    # 多近的人算「发现」
+  wait_timeout: 120       # 等待多久没人 resume 就自动继续，0 = 一直等
+  person_cooldown: 30     # resume 后多少秒内不再因为发现人停下
+
 # 后端启动时自动拉起的进程；若 state_file 里设置了默认地图，base 起来后会直接进导航
 #   points: 点位 ROS 服务 /points/*（依赖 robot_interfaces 已编译）
 #   camera: 前置相机（person_locator 已编译）
