@@ -21,9 +21,11 @@ async def lifespan(_app: FastAPI):
     runtime.start()          # 任务层先起来，autostart 进导航后就能接任务
     _autostart()
     yield
-    runtime.stop()
-    # 后端退出时把自己拉起的 ROS 进程全部收掉，不留孤儿占串口
-    process_mgr.stop_all()
+    try:
+        runtime.stop()
+    finally:
+        # 后端退出时把自己拉起的 ROS 进程全部收掉，不留孤儿占串口（runtime.stop 出错也要收）
+        process_mgr.stop_all()
 
 
 app = FastAPI(title="MAX_NAV_ROBOT", lifespan=lifespan)

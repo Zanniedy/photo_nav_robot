@@ -136,7 +136,7 @@ def update_point(key: str, req: PointPatch):
 @router.delete("/points/{key}")
 def delete_point(key: str, map_id: str | None = None):
     path = map_path(map_id)
-    annot_store.delete_point(path, find_point(path, key)["id"])
+    _store(annot_store.delete_point, path, find_point(path, key)["id"])
     return ok()
 
 

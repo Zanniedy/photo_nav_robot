@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-import auth, main, runtime, state
+import annot_store, auth, main, runtime, state
 from routers import stack
 from fakes import FakeNav, make_map
 from task_runner import RunnerConfig
@@ -193,3 +193,17 @@ def test_install_restores_estop(clean):
     nav = FakeNav()
     r = runtime.install(nav, RunnerConfig(), estopped=state.load()["estop"])
     assert r.estopped is True and nav.estop is True
+
+
+def test_unexpected_error_envelope(env, monkeypatch):
+    c, _ = env
+    add(c, "A", 1, 0)
+    def boom(*a, **kw):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(annot_store, "delete_point", boom)
+    c2 = TestClient(main.app, raise_server_exceptions=False)
+    c2.post("/api/auth/login", json={"username": auth.AUTH_USER, "password": auth.AUTH_PASSWORD})
+    r = c2.delete("/api/v1/points/A")
+    assert r.status_code == 500
+    body = r.json()
+    assert body["ok"] is False and body["code"] == "INTERNAL" and "RuntimeError" in body["msg"]

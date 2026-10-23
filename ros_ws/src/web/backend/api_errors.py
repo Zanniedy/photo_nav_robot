@@ -4,6 +4,7 @@
   失败 {"ok": false, "robot_id": ..., "code": "...", "msg": "..."}
 HTTP 状态码按 code 定（见 STATUS），调用方以 code 为准。旧 /api 接口不受影响。
 """
+import traceback
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -51,3 +52,14 @@ def install(app: FastAPI) -> None:
             return await request_validation_exception_handler(req, e)   # 旧接口保持 422
         msg = "; ".join(f"{'.'.join(str(x) for x in err['loc'][1:])}: {err['msg']}" for err in e.errors())
         return fail_response("BAD_REQUEST", msg or "参数错误")
+
+    @app.exception_handler(Exception)
+    async def _unexpected(req: Request, e: Exception):
+        # 没预料到的异常：/api/v1 也按统一格式返回，traceback 进 ui 日志
+        if not req.url.path.startswith("/api/v1/"):
+            return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        import process_mgr                         # 放这里避免循环 import
+        for line in traceback.format_exception(type(e), e, e.__traceback__):
+            for ln in line.rstrip().splitlines():
+                process_mgr.log("ui", ln)
+        return fail_response("INTERNAL", f"内部错误: {type(e).__name__}")
