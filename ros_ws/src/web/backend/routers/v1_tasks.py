@@ -5,7 +5,7 @@
 from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
-import annot_store, process_mgr, runtime
+import annot_store, maps, process_mgr, runtime
 from api_errors import ApiError, ok
 from routers.v1_data import find_point, map_path
 from task_runner import TaskError
@@ -66,7 +66,8 @@ def _submit(req: TaskReq, request: Request) -> dict:
     else:
         keys = req.points or ([req.point] if req.point else [])
         pts = [find_point(path, k) for k in keys]
-    t = _call(r.submit, req.type, [_snapshot(p) for p in pts], map_id=req.map_id,
+    # 没带 map_id 也用查点的那张地图核对，防止查点和下发之间导航换了地图
+    t = _call(r.submit, req.type, [_snapshot(p) for p in pts], map_id=req.map_id or maps.name_of(path),
               max_speed=req.max_speed, loop=loop, route_id=route_id)
     process_mgr.log("ui", f"[{getattr(request.state, 'caller', '?')}] {req.type} → "
                           + " → ".join(t["points"]) + f"（任务 {t['id']}）")

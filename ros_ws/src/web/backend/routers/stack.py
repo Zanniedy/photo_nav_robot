@@ -238,8 +238,8 @@ def nav_start(req: MapReq):
 @router.post("/nav/switch_map")
 def nav_switch_map(req: MapReq):
     """导航中热切换地图（map_server load_map），不在导航就直接以该地图启动导航"""
-    runtime.cancel_all("切换地图")
     m = _map_or_404(req.map)
+    runtime.cancel_all("切换地图")                 # 地图确实存在才取消任务
     if not process_mgr.is_running("nav"):
         return nav_start(req)
     r = process_mgr.run_once(

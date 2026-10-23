@@ -198,10 +198,14 @@ class TaskRunner:
         self._end_all("canceled", reason)
 
     def tick(self) -> None:
-        """外部每 0.5s 调一次：导航停了就结束任务、等待超时、巡航中发现人"""
+        """外部每 0.5s 调一次：导航停了 / 地图换了就结束任务、等待超时、巡航中发现人"""
         with self._lock:
             if (self._fg or self._patrol) and not self.nav.nav_running():
                 self._end_all("failed", "导航已停止")
+                return
+            cur = self.nav.current_map_id()
+            if any(t is not None and t.map_id != cur for t in (self._fg, self._patrol)):
+                self._end_all("failed", "地图已切换")         # 点位坐标是旧地图的，不能接着走
                 return
             p = self._patrol
             if p is None:

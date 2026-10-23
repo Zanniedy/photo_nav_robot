@@ -164,3 +164,13 @@ def test_history_limit():
 def test_config_from_dict():
     c = RunnerConfig.from_dict({"guide_speed": "0.2", "wait_on_person": 1, "unknown": 5})
     assert c.guide_speed == 0.2 and c.wait_on_person is True and c.wait_timeout == 120.0
+
+
+def test_map_switched_fails_task():
+    r, nav, *_ = mk()
+    t = r.submit("goto", [pt("A", 1, 0)])
+    nav.map_id = "lab"
+    r.tick()
+    s = r.get(t["id"])
+    assert s["state"] == "failed" and s["message"] == "地图已切换"
+    assert r.current() == {"foreground": None, "patrol": None}

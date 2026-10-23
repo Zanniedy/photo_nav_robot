@@ -201,3 +201,14 @@ def test_estop_cancels_patrol_and_subtask():
     r.estop()
     assert r.get(p["id"])["state"] == "canceled" and r.get(g["id"])["state"] == "canceled"
     assert r.current() == {"foreground": None, "patrol": None}
+
+
+def test_map_switched_fails_patrol_and_subtask():
+    r, nav, *_ = mk()
+    p = r.submit("patrol", route(), loop=True)
+    g = r.submit("guide", [pt("X", 5, 5)])
+    nav.map_id = "lab"
+    r.tick()
+    assert r.get(p["id"])["state"] == "failed" and r.get(p["id"])["message"] == "地图已切换"
+    assert r.get(g["id"])["state"] == "failed"
+    assert r.current() == {"foreground": None, "patrol": None}

@@ -61,3 +61,10 @@ def test_mapping_start_cancels_task(env):
     assert c.post("/api/mapping/start").status_code == 200
     s = runtime.runner.get(t)
     assert s["state"] == "canceled" and s["message"] == "切换到建图"
+
+
+def test_switch_to_missing_map_keeps_task(env):
+    c, _ = env
+    t = c.post("/api/points_goto", json={"names": ["A"]}).json()["task_id"]
+    assert c.post("/api/nav/switch_map", json={"map": "nope"}).status_code == 404
+    assert runtime.runner.get(t)["state"] == "running"

@@ -108,6 +108,9 @@ def test_task_errors(env):
     r = c.post("/api/v1/tasks", json={"type": "goto", "points": ["A"], "map_id": "lab"})
     assert r.json()["code"] == "MAP_MISMATCH"
     assert c.post("/api/v1/tasks", json={"type": "patrol"}).json()["code"] == "BAD_REQUEST"
+    nav.map_id = "lab"                             # 导航地图和标注所在地图对不上（切换中）
+    assert c.post("/api/v1/tasks", json={"type": "goto", "points": ["A"]}).json()["code"] == "MAP_MISMATCH"
+    nav.map_id = "office"
     nav.running = False
     r = c.post("/api/v1/tasks", json={"type": "goto", "points": ["A"]})
     assert r.status_code == 409 and r.json()["code"] == "NAV_NOT_RUNNING"
