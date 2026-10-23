@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 import auth, api_errors, process_mgr, runtime
 from config import AUTOSTART, PROCESSES
-from routers import annotations, captures, commands, diag, rosproxy, stack, v1_robot
+from routers import annotations, captures, commands, diag, rosproxy, stack, v1_robot, v1_data, v1_tasks
 
 
 def _autostart():
@@ -54,6 +54,8 @@ app.include_router(captures.router)
 app.include_router(commands.router)
 app.include_router(diag.router)
 app.include_router(v1_robot.router)
+app.include_router(v1_data.router)
+app.include_router(v1_tasks.router)
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):

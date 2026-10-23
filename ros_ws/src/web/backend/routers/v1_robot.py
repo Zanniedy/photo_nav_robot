@@ -1,8 +1,10 @@
-"""/api/v1：机器人身份、调用 token（之后加 status、急停、事件推送）"""
-from fastapi import APIRouter, Request
+"""/api/v1：机器人身份、调用 token、状态、急停、事件推送（WebSocket）"""
+import asyncio, time
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-import process_mgr, robot_config
+import auth, maps, process_mgr, robot_config, runtime
 from api_errors import ApiError, ok
+from routers import stack
 
 router = APIRouter(prefix="/api/v1")
 
@@ -55,3 +57,74 @@ def delete_token(name: str, request: Request):
         raise ApiError("NOT_FOUND", f"token 不存在: {name}")
     process_mgr.log("ui", f"删除 API token: {name}")
     return ok()
+
+
+def status_snapshot() -> dict:
+    r, nav = runtime.runner, runtime.nav
+    cur = stack.current_map()
+    pose = nav.pose() if nav else None
+    score = nav.loc_score() if nav else None
+    min_score = r.cfg.min_score if r else 0.0
+    info = robot_config.public_info()
+    return {
+        "robot_id": info["robot_id"], "name": info["name"], "mode": stack._mode(),
+        "map": {"map_id": maps.name_of(cur), "version": maps.version(cur)} if cur else None,
+        "pose": {"x": round(pose[0], 3), "y": round(pose[1], 3), "yaw": round(pose[2], 3)} if pose else None,
+        # reliable：没设门限（min_score=0）时为 None
+        "localization": {"score": score,
+                         "reliable": (score is not None and score >= min_score) if min_score > 0 else None},
+        "estop": r.estopped if r else False,
+        "tasks": r.current() if r else {"foreground": None, "patrol": None},
+        "time": time.time(),
+    }
+
+
+@router.get("/status")
+def status():
+    return ok(status_snapshot())
+
+
+@router.post("/estop")
+def estop(request: Request):
+    if runtime.runner is None:
+        raise ApiError("INTERNAL", "任务层没启动")
+    runtime.set_estop(True)
+    process_mgr.log("ui", f"[{getattr(request.state, 'caller', '?')}] 急停")
+    return ok({"estop": True})
+
+
+@router.post("/estop/release")
+def estop_release(request: Request):
+    if runtime.runner is None:
+        raise ApiError("INTERNAL", "任务层没启动")
+    runtime.set_estop(False)
+    process_mgr.log("ui", f"[{getattr(request.state, 'caller', '?')}] 解除急停")
+    return ok({"estop": False})
+
+
+@router.websocket("/events")
+async def events(ws: WebSocket):
+    """每秒推一次 {"type": "status", "status": ...}；任务事件立即推。认证：cookie、Bearer 头或 ?token="""
+    if auth.identify_ws(ws) is None:
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    sub = runtime.hub.subscribe()
+    last = 0.0
+    try:
+        while True:
+            wait = 1.0 - (time.monotonic() - last)
+            if wait > 0:
+                try:
+                    ev = await asyncio.wait_for(sub[1].get(), timeout=wait)
+                    await ws.send_json({"robot_id": robot_config.robot_id(), **ev})
+                    continue
+                except asyncio.TimeoutError:
+                    pass
+            last = time.monotonic()
+            await ws.send_json({"type": "status", "robot_id": robot_config.robot_id(),
+                                "status": status_snapshot()})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        runtime.hub.unsubscribe(sub)
