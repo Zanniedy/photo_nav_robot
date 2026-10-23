@@ -140,3 +140,22 @@ TEST(FeedforwardWz, MovingRemovesDeadbandLift) {
         prev = u;
     }
 }
+
+TEST(Estop, ZeroesTargetsAndSmoother) {
+    SmoothAxis vx, wz;
+    for (int i = 0; i < 100; ++i) {
+        vx.step(0.25, 0.02, 0.4, 0.6, 1.5);
+        wz.step(0.8, 0.02, 1.2, 1.8, 5.0);
+    }
+    ASSERT_GT(vx.v, 0.2);
+    double tvx = 0.25, twz = 0.8;
+    apply_estop(tvx, twz, vx, wz);
+    EXPECT_EQ(tvx, 0.0);
+    EXPECT_EQ(twz, 0.0);
+    EXPECT_EQ(vx.v, 0.0);
+    EXPECT_EQ(vx.a, 0.0);
+    EXPECT_EQ(wz.v, 0.0);
+    EXPECT_EQ(wz.a, 0.0);
+    // 解除后从 0 按加加速度起步，不会带着急停前的速度冲出去
+    EXPECT_LT(vx.step(0.25, 0.02, 0.4, 0.6, 1.5), 0.01);
+}

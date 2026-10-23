@@ -72,6 +72,14 @@ struct SmoothAxis {
     void reset() { v = a = 0.0; }
 };
 
+// 软件急停：目标速度归零、平滑器状态清零。解除后从 0 按加速度 / 加加速度限制起步，
+// 不会带着急停前的速度冲出去。只是软件保护，不替代遥控器和硬件急停
+inline void apply_estop(double& target_vx, double& target_wz, SmoothAxis& vx, SmoothAxis& wz) {
+    target_vx = target_wz = 0.0;
+    vx.reset();
+    wz.reset();
+}
+
 // 前馈：带符号速度 → 带符号 u；|v| < v_min 视为 0
 inline double feedforward_u(double v, const SpeedTable& t, double v_min, double u_max) {
     if (std::abs(v) < v_min) return 0.0;

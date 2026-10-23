@@ -1,5 +1,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -161,6 +162,14 @@ public:
             odom_topic, 10,
             [this](const nav_msgs::msg::Odometry::SharedPtr msg) { on_odom(*msg); });
 
+        // 软件急停（web 后端 /api/v1/estop 发）：transient local，bridge 重启也能拿到当前状态
+        estop_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/robot/estop", rclcpp::QoS(1).transient_local(),
+            [this](const std_msgs::msg::Bool::SharedPtr msg) {
+                if (estop_.exchange(msg->data) != msg->data)
+                    RCLCPP_WARN(this->get_logger(), msg->data ? "[ESTOP] 软件急停" : "[ESTOP] 解除急停");
+            });
+
         // 调参用：[target_vx, cur_vx, meas_vx, u_vx, k_vx, target_wz, cur_wz, meas_wz, u_wz, i_wz]
         debug_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("/robot/cmd_debug", 10);
 
@@ -232,6 +241,10 @@ private:
             const double age = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - last_cmd_time_).count();
             if (age > cmd_timeout_) target_vx_ = target_wz_ = 0.0;
+            if (estop_) {               // 急停期间不管 cmd_vel 是什么都输出 0
+                apply_estop(target_vx_, target_wz_, vx_s_, wz_s_);
+                wz_pi_.reset();
+            }
             cur_vx_ = vx_s_.step(target_vx_, dt, vx_acc_, vx_dec_, vx_jerk_);
             cur_wz_ = wz_s_.step(target_wz_, dt, wz_acc_, wz_dec_, wz_jerk_);
 
@@ -614,12 +627,14 @@ private:
     float       yaw_speed_filtered_;
 
     std::atomic<bool> running_;
+    std::atomic<bool> estop_{false};
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr        yaw_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr        yaw_speed_pub_;
     rclcpp::TimerBase::SharedPtr                                tx_timer_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr    odom_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr        estop_sub_;
     rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr debug_pub_;
     OnSetParametersCallbackHandle::SharedPtr                    param_cb_;
 };
