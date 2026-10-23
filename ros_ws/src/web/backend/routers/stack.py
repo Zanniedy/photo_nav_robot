@@ -3,8 +3,10 @@ import asyncio, json, math, shlex, threading, time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import maps, process_mgr, state
+import maps, process_mgr, runtime, state
+from api_errors import STATUS
 from config import PROCESSES
+from task_runner import TaskError
 
 router = APIRouter(prefix="/api")
 
@@ -119,7 +121,18 @@ def current_map_id() -> str | None:
     return maps.name_of(cur) if cur else None
 
 
+def submit_legacy(points: list[dict]) -> dict:
+    """旧接口（points_goto / nav/waypoints）下发 goto；错误转成旧格式的 HTTPException"""
+    if runtime.runner is None:
+        raise HTTPException(500, "任务层没启动")
+    try:
+        return runtime.runner.submit("goto", points)
+    except TaskError as e:
+        raise HTTPException(STATUS.get(e.code, 400), e.msg)
+
+
 def start_nav(m: dict) -> None:
+    runtime.cancel_all("切换地图")
     process_mgr.stop("waypoints")
     process_mgr.stop("slam")
     _ensure_base()
@@ -185,6 +198,7 @@ def proc_stop(name: str):
 
 @router.post("/mapping/start")
 def mapping_start():
+    runtime.cancel_all("切换到建图")
     process_mgr.stop("waypoints")
     process_mgr.stop("nav")
     _ensure_base()
@@ -224,6 +238,7 @@ def nav_start(req: MapReq):
 @router.post("/nav/switch_map")
 def nav_switch_map(req: MapReq):
     """导航中热切换地图（map_server load_map），不在导航就直接以该地图启动导航"""
+    runtime.cancel_all("切换地图")
     m = _map_or_404(req.map)
     if not process_mgr.is_running("nav"):
         return nav_start(req)
@@ -250,22 +265,19 @@ def nav_initialpose(req: InitPoseReq):
 
 @router.post("/nav/waypoints")
 def nav_waypoints(req: WaypointsReq):
+    """地图上点的航点：经任务层依次 NavigateToPose（原来是 FollowWaypoints 子进程，拿不到结果）"""
     if not process_mgr.is_running("nav"):
         raise HTTPException(409, "导航未启动")
     if not req.poses:
         raise HTTPException(400, "航点为空")
-    goal = {"poses": [{
-        "header": {"frame_id": "map"},
-        "pose": {"position": {"x": p.x, "y": p.y, "z": 0.0}, "orientation": _quat(p.yaw)},
-    } for p in req.poses]}
-    process_mgr.start("waypoints",
-        "ros2 action send_goal /follow_waypoints nav2_msgs/action/FollowWaypoints "
-        + shlex.quote(json.dumps(goal)) + " --feedback")
-    return {"ok": True}
+    t = submit_legacy([{"id": f"wp{i}", "name": f"航点{i}", "x": p.x, "y": p.y, "yaw": p.yaw}
+                       for i, p in enumerate(req.poses, 1)])
+    return {"ok": True, "task_id": t["id"]}
 
 
 @router.post("/nav/cancel")
 def nav_cancel():
+    runtime.cancel_all("网页取消导航")
     process_mgr.stop("waypoints")   # SIGINT 会让 action 客户端取消自己的 goal
     out = []
     for action in ("/navigate_to_pose", "/follow_waypoints"):
@@ -279,6 +291,7 @@ def nav_cancel():
 @router.post("/stop")
 def stop_mode():
     """退出建图/导航，保留底盘和 rosbridge"""
+    runtime.cancel_all("退出导航")
     for n in ("waypoints", "nav", "slam"):
         process_mgr.stop(n)
     return {"ok": True}
@@ -286,6 +299,7 @@ def stop_mode():
 
 @router.post("/stop_all")
 def stop_all():
+    runtime.cancel_all("退出导航")
     for n in ("waypoints", "nav", "slam", "base"):
         process_mgr.stop(n)
     return {"ok": True}

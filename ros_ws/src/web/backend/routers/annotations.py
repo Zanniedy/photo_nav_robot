@@ -164,5 +164,5 @@ def goto_points(req: GotoReq):
         if p is None:
             raise HTTPException(404, f"点不存在: {n}")
         pts.append(p)
-    stack.nav_waypoints(stack.WaypointsReq(poses=[stack.Pose2D(x=p["x"], y=p["y"], yaw=p["yaw"]) for p in pts]))
-    return {"ok": True, "names": [p["name"] for p in pts]}
+    t = stack.submit_legacy([{k: p[k] for k in ("id", "name", "x", "y", "yaw")} for p in pts])
+    return {"ok": True, "names": [p["name"] for p in pts], "task_id": t["id"]}
