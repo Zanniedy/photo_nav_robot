@@ -31,6 +31,18 @@
     </section>
 
     <section>
+      <h4>急停</h4>
+      <div class="kv"><span>软件急停</span>
+        <b v-if="v1 == null" class="muted">—</b>
+        <b v-else :class="v1.estop ? 'bad-t' : 'ok-t'">{{ v1.estop ? '急停中' : '未急停' }}</b></div>
+      <div v-if="v1 && !v1.ros_link" class="small warn-t">ROS 未连接：急停指令到不了底盘，请用遥控器或硬件急停</div>
+      <div class="row">
+        <button class="sm" :disabled="!!store.busy" @click="doEstop">急停</button>
+        <button class="sm" :disabled="!!store.busy || !(v1 && v1.estop)" @click="doRelease">解除急停</button>
+      </div>
+    </section>
+
+    <section>
       <h4>机器人身份</h4>
       <div class="kv"><span>robot_id</span>
         <b v-if="ident && ident.configured" class="mono">{{ ident.robot_id }}</b>
@@ -137,6 +149,20 @@ async function dropToken(name) {
   if (!confirm(`删除 token ${name}？用它的设备会立刻连不上`)) return
   await run('删除 token', async () => { await api.deleteToken(name); await loadIdent() })
 }
+// 软件急停状态（/api/v1/status），挂载期间每 2 s 拉一次
+const v1 = ref(null)
+async function loadV1() {
+  try { v1.value = (await api.v1Status()).data } catch { /* 后端没起，下次再拉 */ }
+}
+async function doEstop() {
+  await run('急停', () => api.estop())
+  await loadV1()
+}
+async function doRelease() {
+  if (!confirm('确认解除急停？解除后可以重新下发任务')) return
+  await run('解除急停', () => api.estopRelease())
+  await loadV1()
+}
 const unsubs = []
 
 const deg = (r) => (r * 180 / Math.PI).toFixed(1)
@@ -185,6 +211,9 @@ onMounted(() => {
   unsubs.push(() => clearInterval(t))
   doDiag()
   loadIdent()
+  loadV1()
+  const v = setInterval(loadV1, 2000)
+  unsubs.push(() => clearInterval(v))
 })
 onUnmounted(() => unsubs.forEach((u) => u()))
 </script>

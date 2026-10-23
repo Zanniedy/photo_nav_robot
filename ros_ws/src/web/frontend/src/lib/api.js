@@ -57,4 +57,7 @@ export const api = {
   setRobot: (body) => req('PUT', '/api/v1/robot', body),
   createToken: (name) => req('POST', '/api/v1/robot/tokens', { name }),
   deleteToken: (name) => req('DELETE', `/api/v1/robot/tokens/${q(name)}`),
+  v1Status: () => req('GET', '/api/v1/status'),
+  estop: () => req('POST', '/api/v1/estop'),
+  estopRelease: () => req('POST', '/api/v1/estop/release'),
 }
