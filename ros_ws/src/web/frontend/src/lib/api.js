@@ -12,7 +12,7 @@ async function req(method, path, body) {
   let data
   try { data = JSON.parse(text) } catch { data = text }
   if (res.status === 401 && !path.startsWith('/api/auth/')) onUnauthorized()
-  if (!res.ok) throw new Error(typeof data === 'object' && data.detail ? data.detail : text)
+  if (!res.ok) throw new Error(typeof data === 'object' && (data.detail || data.msg) ? (data.detail || data.msg) : text)
   return data
 }
 
@@ -53,4 +53,8 @@ export const api = {
   quickList: () => req('GET', '/api/cmd'),
   quick: (id) => req('POST', `/api/cmd/quick/${id}`),
   cli: (cmd, timeout) => req('POST', '/api/cmd/cli', { cmd, timeout }),
+  robot: () => req('GET', '/api/v1/robot'),
+  setRobot: (body) => req('PUT', '/api/v1/robot', body),
+  createToken: (name) => req('POST', '/api/v1/robot/tokens', { name }),
+  deleteToken: (name) => req('DELETE', `/api/v1/robot/tokens/${q(name)}`),
 }

@@ -31,6 +31,31 @@
     </section>
 
     <section>
+      <h4>机器人身份</h4>
+      <div class="kv"><span>robot_id</span>
+        <b v-if="ident && ident.configured" class="mono">{{ ident.robot_id }}</b>
+        <b v-else class="warn-t">未配置{{ ident ? `（${ident.robot_id}）` : '' }}</b></div>
+      <div v-if="ident && !ident.configured" class="row">
+        <input v-model.trim="newId" placeholder="max-001" class="mono" aria-label="robot_id" />
+        <button class="sm" :disabled="!newId || !!store.busy" @click="saveIdent({ robot_id: newId })">设置</button>
+      </div>
+      <div class="row">
+        <input v-model.trim="newName" :placeholder="(ident && ident.name) || '显示名'" aria-label="显示名" />
+        <button class="sm" :disabled="!newName || !!store.busy" @click="saveIdent({ name: newName })">改名</button>
+      </div>
+      <div class="kv"><span>API token</span><b>{{ ident && ident.tokens.length ? '' : '—' }}</b></div>
+      <div v-for="t in (ident ? ident.tokens : [])" :key="t" class="row">
+        <span class="name mono">{{ t }}</span>
+        <button class="sm" :disabled="!!store.busy" @click="dropToken(t)" :aria-label="`删除 token ${t}`">删除</button>
+      </div>
+      <div class="row">
+        <input v-model.trim="tokenName" placeholder="tablet" aria-label="新 token 名" />
+        <button class="sm" :disabled="!tokenName || !!store.busy" @click="makeToken">生成</button>
+      </div>
+      <div v-if="newToken" class="small">只显示这一次，请复制保存：<code class="mono">{{ newToken }}</code></div>
+    </section>
+
+    <section>
       <h4>话题频率</h4>
       <div v-for="t in TOPICS" :key="t.name" class="row">
         <span class="led" :class="rateClass(t)" />
@@ -89,6 +114,29 @@ async function restart(name) {
 const yaw = ref(null), yawSpeed = ref(null), odom = ref(null), cmd = ref(null), score = ref(null)
 const tfOk = ref(false)
 const diagItems = ref([])
+const ident = ref(null), newId = ref(''), newName = ref(''), tokenName = ref(''), newToken = ref('')
+async function loadIdent() {
+  try { ident.value = (await api.robot()).data } catch { /* 后端没起，下次再拉 */ }
+}
+async function saveIdent(body) {
+  if (body.robot_id && !confirm(`robot_id 设置后不能再改，确认用 ${body.robot_id}？`)) return
+  await run('保存机器人身份', async () => {
+    ident.value = (await api.setRobot(body)).data
+    newId.value = ''
+    newName.value = ''
+  })
+}
+async function makeToken() {
+  await run('生成 token', async () => {
+    newToken.value = (await api.createToken(tokenName.value)).data.token
+    tokenName.value = ''
+    await loadIdent()
+  })
+}
+async function dropToken(name) {
+  if (!confirm(`删除 token ${name}？用它的设备会立刻连不上`)) return
+  await run('删除 token', async () => { await api.deleteToken(name); await loadIdent() })
+}
 const unsubs = []
 
 const deg = (r) => (r * 180 / Math.PI).toFixed(1)
@@ -136,6 +184,7 @@ onMounted(() => {
   const t = setInterval(() => { tfOk.value = !!lookup('map', 'base_footprint') }, 500)
   unsubs.push(() => clearInterval(t))
   doDiag()
+  loadIdent()
 })
 onUnmounted(() => unsubs.forEach((u) => u()))
 </script>
