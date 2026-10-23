@@ -170,3 +170,26 @@ def test_events_ws_requires_auth(env):
     with pytest.raises(WebSocketDisconnect):
         with TestClient(main.app).websocket_connect("/api/v1/events") as ws:
             ws.receive_json()
+
+
+def test_estop_without_ros(env):
+    c, _ = env
+    runtime.install(runtime.NullNav(), RunnerConfig())
+    assert c.get("/api/v1/status").json()["data"]["ros_link"] is False
+    r = c.post("/api/v1/estop")
+    assert r.status_code == 500 and r.json()["code"] == "INTERNAL" and "ROS" in r.json()["msg"]
+    assert state.load()["estop"] is True and runtime.runner.estopped is True     # 软件状态照样生效
+    r = c.post("/api/v1/estop/release")
+    assert r.json()["code"] == "INTERNAL" and state.load()["estop"] is False
+
+
+def test_status_ros_link(env):
+    c, _ = env
+    assert c.get("/api/v1/status").json()["data"]["ros_link"] is True
+
+
+def test_install_restores_estop(clean):
+    state.update(lambda d: d.__setitem__("estop", True))
+    nav = FakeNav()
+    r = runtime.install(nav, RunnerConfig(), estopped=state.load()["estop"])
+    assert r.estopped is True and nav.estop is True

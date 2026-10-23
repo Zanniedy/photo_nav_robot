@@ -14,6 +14,7 @@ runner: TaskRunner | None = None
 nav = None
 _stop = threading.Event()
 _ticker_thread: threading.Thread | None = None
+_estop_lock = threading.Lock()          # 急停 / 解除并发时，内存和 state 文件保持一致
 
 
 class NullNav:
@@ -81,8 +82,14 @@ def cancel_all(reason: str) -> None:
         runner.cancel_all(reason)
 
 
+def ros_ok() -> bool:
+    """任务层真的连着 ROS（不是 NullNav 占位）"""
+    return nav is not None and not isinstance(nav, NullNav)
+
+
 def set_estop(on: bool) -> None:
     """急停 / 解除，同时写进 state 文件"""
-    runner.estop() if on else runner.release_estop()
-    state.update(lambda d: d.__setitem__("estop", bool(on)))
+    with _estop_lock:
+        runner.estop() if on else runner.release_estop()
+        state.update(lambda d: d.__setitem__("estop", bool(on)))
     process_mgr.log("ui", "软件急停" if on else "解除急停")

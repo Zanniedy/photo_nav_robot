@@ -74,6 +74,7 @@ def status_snapshot() -> dict:
         "localization": {"score": score,
                          "reliable": (score is not None and score >= min_score) if min_score > 0 else None},
         "estop": r.estopped if r else False,
+        "ros_link": runtime.ros_ok(),
         "tasks": r.current() if r else {"foreground": None, "patrol": None},
         "time": time.time(),
     }
@@ -84,22 +85,27 @@ def status():
     return ok(status_snapshot())
 
 
-@router.post("/estop")
-def estop(request: Request):
+def _set_estop(on: bool, request: Request) -> dict:
     if runtime.runner is None:
         raise ApiError("INTERNAL", "任务层没启动")
-    runtime.set_estop(True)
-    process_mgr.log("ui", f"[{getattr(request.state, 'caller', '?')}] 急停")
-    return ok({"estop": True})
+    what = "急停" if on else "解除急停"
+    runtime.set_estop(on)                          # 软件状态照样改（ROS 不通也要拒绝新任务）
+    caller = getattr(request.state, "caller", "?")
+    if not runtime.ros_ok():
+        process_mgr.log("ui", f"!!! [{caller}] {what}：ROS 没连上，指令到不了底盘，只改了软件状态 !!!")
+        raise ApiError("INTERNAL", "ROS 没连上，急停指令到不了底盘；请用遥控器或硬件急停")
+    process_mgr.log("ui", f"[{caller}] {what}")
+    return ok({"estop": on})
+
+
+@router.post("/estop")
+def estop(request: Request):
+    return _set_estop(True, request)
 
 
 @router.post("/estop/release")
 def estop_release(request: Request):
-    if runtime.runner is None:
-        raise ApiError("INTERNAL", "任务层没启动")
-    runtime.set_estop(False)
-    process_mgr.log("ui", f"[{getattr(request.state, 'caller', '?')}] 解除急停")
-    return ok({"estop": False})
+    return _set_estop(False, request)
 
 
 @router.websocket("/events")
