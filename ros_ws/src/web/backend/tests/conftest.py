@@ -37,5 +37,5 @@ def clean():
     os.makedirs(os.path.join(TMP, "maps"))
     import robot_config, maps
     robot_config._cache.update(key=None, data=None)
-    getattr(maps, "_version_cache", {}).clear()   # Task 3 才有
+    maps._version_cache.clear()
     yield TMP

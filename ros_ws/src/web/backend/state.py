@@ -2,7 +2,8 @@
 持久化的运行时状态（web 后端和 points_server 共用，fcntl 锁）：
 {"default_map": id | null,            # 开机自动导航的地图
  "current_map": id | null,            # 正在导航的地图，后端维护，points_server 读
- "poses": {id: {"x":..,"y":..,"yaw":..}}}
+ "poses": {id: {"x":..,"y":..,"yaw":..}},
+ "estop": bool,                      # 软件急停（后端重启后保持，要手动解除）}
 """
 import contextlib, fcntl, json, os
 from config import STATE_FILE
@@ -28,6 +29,7 @@ def _read() -> dict:
     d.setdefault("default_map", None)
     d.setdefault("current_map", None)
     d.setdefault("poses", {})
+    d.setdefault("estop", False)
     return d
 
 

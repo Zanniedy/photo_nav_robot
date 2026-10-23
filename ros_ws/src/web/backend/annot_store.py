@@ -1,7 +1,8 @@
 """
 每张地图的标注（绘图形状 + 命名点位）存一个 JSON，和地图文件放在一起：
   <地图目录>/<地图名>.annot.json        （地图 id = yaml 绝对路径，foo.yaml → foo.annot.json）
-  {"map": id, "shapes": [...], "points": [{id, name, x, y, yaw, note}, ...]}
+  {"map": id, "shapes": [...], "points": [{id, name, x, y, yaw, note}, ...],
+   "routes": [{id, name, points: [点 id...], loop}, ...]}      巡航路线，点被删时从路线里去掉
 地图整目录拷走/改目录，标注跟着走；同名重新加载地图时自动读回。
 旧版存在 annotations_dir/<地图名>_<sha1(id)[:8]>.json：新位置没有文件时读旧的，下次保存写到新位置。
 地图目录不可写时退回 annotations_dir。
@@ -13,6 +14,8 @@ from config import ANNOT_DIR
 
 MAX_POINTS = 500
 MAX_SHAPES = 2000
+MAX_ROUTES = 100
+MAX_ROUTE_POINTS = 200
 _NAME_RE = re.compile(r"^[^\x00-\x1f/\\]{1,64}$")
 
 
@@ -57,7 +60,8 @@ def _read(map_id: str) -> dict:
         except (OSError, ValueError):
             d = {}
             break
-    return {"map": map_id, "shapes": list(d.get("shapes", [])), "points": list(d.get("points", []))}
+    return {"map": map_id, "shapes": list(d.get("shapes", [])), "points": list(d.get("points", [])),
+            "routes": list(d.get("routes", []))}
 
 
 def _write(d: dict) -> None:
@@ -161,10 +165,12 @@ def upsert_point(map_id: str, name: str, x: float, y: float, yaw: float = 0.0, n
 def delete_point(map_id: str, key: str) -> bool:
     with _locked():
         d = _read(map_id)
-        n = len(d["points"])
-        d["points"] = [p for p in d["points"] if p["id"] != key and p["name"] != key]
-        if len(d["points"]) == n:
+        gone = {p["id"] for p in d["points"] if p["id"] == key or p["name"] == key}
+        if not gone:
             return False
+        d["points"] = [p for p in d["points"] if p["id"] not in gone]
+        for r in d["routes"]:
+            r["points"] = [i for i in r["points"] if i not in gone]
         _write(d)
         return True
 
@@ -175,3 +181,79 @@ def reorder_points(map_id: str, ids: list[str]) -> None:
         order = {i: k for k, i in enumerate(ids)}
         d["points"].sort(key=lambda p: order.get(p["id"], len(order)))
         _write(d)
+
+
+# ── 巡航路线 ─────────────────────────────────────────────────────────────
+
+def _route_point_ids(d: dict, keys: list[str]) -> list[str]:
+    """路线里的点：id 或点名 → id，必须都存在"""
+    if not keys:
+        raise StoreError("路线至少要一个点")
+    if len(keys) > MAX_ROUTE_POINTS:
+        raise StoreError(f"路线最多 {MAX_ROUTE_POINTS} 个点")
+    ids = []
+    for k in keys:
+        p = next((p for p in d["points"] if p["id"] == k or p["name"] == k), None)
+        if p is None:
+            raise StoreError(f"点不存在: {k}")
+        ids.append(p["id"])
+    return ids
+
+
+def _find_route(d: dict, key: str) -> dict | None:
+    return next((r for r in d["routes"] if r["id"] == key or r["name"] == key), None)
+
+
+def list_routes(map_id: str) -> list[dict]:
+    return load(map_id)["routes"]
+
+
+def get_route(map_id: str, key: str) -> dict | None:
+    return _find_route(load(map_id), key)
+
+
+def create_route(map_id: str, name: str, points: list[str], loop: bool = True) -> dict:
+    if not _NAME_RE.match(name or "") or name.strip() != name:
+        raise StoreError("路线名 1~64 字符，不能含 / \\ 或首尾空格")
+    with _locked():
+        d = _read(map_id)
+        if any(r["name"] == name for r in d["routes"]):
+            raise StoreError(f"路线名已存在: {name}")
+        if len(d["routes"]) >= MAX_ROUTES:
+            raise StoreError(f"路线最多 {MAX_ROUTES} 条")
+        r = {"id": secrets.token_hex(4), "name": name, "points": _route_point_ids(d, points), "loop": bool(loop)}
+        d["routes"].append(r)
+        _write(d)
+        return r
+
+
+def update_route(map_id: str, key: str, name: str | None = None, points: list[str] | None = None,
+                 loop: bool | None = None) -> dict:
+    with _locked():
+        d = _read(map_id)
+        r = _find_route(d, key)
+        if r is None:
+            raise KeyError(key)
+        if name is not None and name != r["name"]:
+            if not _NAME_RE.match(name) or name.strip() != name:
+                raise StoreError("路线名 1~64 字符，不能含 / \\ 或首尾空格")
+            if any(q["name"] == name for q in d["routes"]):
+                raise StoreError(f"路线名已存在: {name}")
+            r["name"] = name
+        if points is not None:
+            r["points"] = _route_point_ids(d, points)
+        if loop is not None:
+            r["loop"] = bool(loop)
+        _write(d)
+        return r
+
+
+def delete_route(map_id: str, key: str) -> bool:
+    with _locked():
+        d = _read(map_id)
+        n = len(d["routes"])
+        d["routes"] = [r for r in d["routes"] if r["id"] != key and r["name"] != key]
+        if len(d["routes"]) == n:
+            return False
+        _write(d)
+        return True
