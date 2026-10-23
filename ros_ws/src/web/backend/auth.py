@@ -2,8 +2,9 @@
 登录：用户名/密码换一个 HMAC 签名的 cookie（无状态，密钥每次启动随机 → 后端重启需重新登录）。
 """
 import hashlib, hmac, secrets, time
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from pydantic import BaseModel
+import robot_config
 from config import AUTH_USER, AUTH_PASSWORD, SESSION_HOURS
 
 COOKIE = "robot_ui_session"
@@ -34,6 +35,31 @@ def check_token(token: str | None) -> bool:
     except ValueError:
         return False
     return hmac.compare_digest(sig, _sign(f"{user}|{exp}")) and int(exp) > time.time()
+
+
+def _identify(cookie: str | None, bearer: str | None) -> str | None:
+    """/api/v1 调用方：Bearer token → "token:<名字>"；网页 cookie → "web"；都不对 → None"""
+    if bearer:
+        name = robot_config.check_token(bearer)
+        return f"token:{name}" if name else None
+    return "web" if check_token(cookie) else None
+
+
+def _bearer(header: str | None) -> str | None:
+    h = header or ""
+    if not h.lower().startswith("bearer "):
+        return None
+    return h[7:].strip() or None
+
+
+def identify(request: Request) -> str | None:
+    return _identify(request.cookies.get(COOKIE), _bearer(request.headers.get("authorization")))
+
+
+def identify_ws(ws: WebSocket) -> str | None:
+    """浏览器 WebSocket 不能自定义请求头，token 也可以放在 ?token= 里"""
+    return _identify(ws.cookies.get(COOKIE),
+                     _bearer(ws.headers.get("authorization")) or ws.query_params.get("token"))
 
 
 class LoginReq(BaseModel):

@@ -4,9 +4,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-import auth, process_mgr
+import auth, api_errors, process_mgr
 from config import AUTOSTART, PROCESSES
-from routers import annotations, captures, commands, diag, rosproxy, stack
+from routers import annotations, captures, commands, diag, rosproxy, stack, v1_robot
 
 
 def _autostart():
@@ -29,13 +29,20 @@ app = FastAPI(title="MAX_NAV_ROBOT", lifespan=lifespan)
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
-    # 静态页面放行（登录页在前端里），/api 除登录接口外都要 cookie
+    # 静态页面放行（登录页在前端里）；/api/v1 认 cookie 或 Bearer token，其余 /api 除登录接口外要 cookie
     p = request.url.path
-    if p.startswith("/api/") and not p.startswith("/api/auth/") \
+    if p.startswith("/api/v1/"):
+        who = auth.identify(request)
+        if who is None:
+            return api_errors.fail_response("UNAUTHORIZED", "未登录或 token 无效")
+        request.state.caller = who
+    elif p.startswith("/api/") and not p.startswith("/api/auth/") \
             and not auth.check_token(request.cookies.get(auth.COOKIE)):
         return JSONResponse({"detail": "未登录"}, status_code=401)
     return await call_next(request)
 
+
+api_errors.install(app)
 
 app.include_router(auth.router)
 app.include_router(rosproxy.router)
@@ -44,6 +51,7 @@ app.include_router(annotations.router)
 app.include_router(captures.router)
 app.include_router(commands.router)
 app.include_router(diag.router)
+app.include_router(v1_robot.router)
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):
