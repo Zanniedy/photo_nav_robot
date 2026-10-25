@@ -1,4 +1,4 @@
-# 交接文档（2026-10-22 晚更新）
+# 交接文档（2026-10-23 晚更新）
 
 平面移动机器人：2D 激光（思岚 C1）+ 底盘 MCU（串口上报 yaw），无轮速计。
 链路：`robot_bridge` → `lio_slam_node`（帧间 ICP）→ `lio_ekf_node` → slam_toolbox 建图 / map_localizer + Nav2（MPPI）导航，外加网页控制台 **MAX_NAV_ROBOT**（`ros_ws/src/web`）。
@@ -7,21 +7,92 @@
 - 实机：`sunrise@192.168.10.42`（有线）/ `192.168.1.124`（Wi-Fi），ARM64，代码在 `~/max_robot/ros_ws`，地图在 `~/max_robot/maps`
 - 同步：`bash rsync.sh`（本机执行）；远端编译：`bash make_remote.sh [--packages-select ...]`（机器人上执行）
 
-## 一览（10-22 晚）
+## 一览（10-23 晚）
 
 | 模块 | 状态 | 提交 |
 |---|---|---|
 | 底盘控制闭环、速度估计、lio 去畸变、Nav2 调参、网页速度曲线等 | 已上机器人，大部分没实车验证 | `745b9f1` |
 | BPU 检测模型 v2（真实照片校准，调试用） | 已上板，能用但慢（117ms/帧） | 模型文件不在 git 里 |
-| 人员跟踪 + 走到人面前（`person_tracker`、`/person/approach`） | 已上机器人，节点能稳定跑，**没在有人的场景实测** | 核心代码在 `ce97711`；网页调试、`/person/state`、approach_client、单测、相机外参**未提交** |
-| Win / 平板交互接口 | 只定了范围 | — |
+| 人员跟踪 + 走到人面前（`person_tracker`、`/person/approach`） | 已上机器人，节点能稳定跑，**没在有人的场景实测** | `ce97711`、`615cdad` |
+| 本地 `/api/v1` + 任务层（goto/guide/patrol、巡航等待、软件急停、robot_id、token） | 本机后端单测 88 个全过；**还没 rsync 到机器人，没编译、没实测** | `7c3d95b`..`c129d4b` |
+| 云（ECS + 自建 EMQX + `cloud_agent`） | 有 ECS，本机能 ping 通、22 端口通；还没登录过 ECS，EMQX 没装，代码没写 | — |
 
 接下来按顺序：
-1. 提交未提交的改动（见「接手后第一件事」）
-2. 实测人员跟随：网页状态页启动 `person`，控制页「人员跟随」点开始（详见 10-22 第二节「实测步骤」）
-3. 跑 v3 模型转换（Softmax 放到 BPU），目标把单帧压到 50ms 以内
-4. 到实际工作环境拍照，重新校准出正式版模型
-5. 重标相机内参（fx=2770 可疑），标定相机和雷达的相对 yaw
+1. 10-23 的 `/api/v1` 上机器人：rsync、编译 `robot_bridge`、重启后端、配 `robot.yaml`，按 10-23 第一节「上机验证」逐项测
+2. 云连通：登录 ECS、装 EMQX、机器人和 ECS 互发 MQTT 消息（见 10-23 第二节）
+3. 实测人员跟随：网页状态页启动 `person`，控制页「人员跟随」点开始（详见 10-22 第二节「实测步骤」）
+4. 跑 v3 模型转换（Softmax 放到 BPU），目标把单帧压到 50ms 以内
+5. 到实际工作环境拍照，重新校准出正式版模型
+6. 重标相机内参（fx=2770 可疑），标定相机和雷达的相对 yaw
+7. 网页的路线编辑和巡航控制界面（`/api/v1/routes` 已有，界面没做）
+
+## 2026-10-23：本地 /api/v1 与任务层
+
+> 设计 `docs/superpowers/specs/2026-10-23-robot-api-v1-design.md`，实施计划 `docs/superpowers/plans/2026-10-23-robot-api-v1.md`（Task 1~9 已完成并提交，Task 10 上机验证没做）。**全部只在本机测过，还没 rsync 到机器人。**
+
+### 做了什么
+
+- **机器人身份**：`~/max_robot/robot.yaml`（`robot_id`、`name`、`api_tokens`），**不在仓库里**（rsync `--delete` 会覆盖仓库里的配置）。没有这个文件时后端照常起，`robot_id` 为 `unset-<hostname>`、`configured: false`。网页状态页「机器人身份」可设 id、名字、生成 / 删除 token（token 只在生成时显示一次）。文件权限 0600；文件坏了不会被覆盖写回
+- **`/api/v1`**：统一返回 `{"ok": true, "data": ...}` / `{"ok": false, "code", "msg"}`，调用方看 `code`；认证 `Authorization: Bearer <token>` 或网页 cookie；所有返回带 `robot_id`。接口列表和错误码见 spec 第 5 节
+- **任务层**（`backend/task_runner.py`，纯 Python 状态机）：`goto`（多点依次）、`guide`（限速单点，默认 0.15m/s）、`patrol`（按路线巡航，可 wait / resume，等待期间可插 goto/guide 子任务）。同时只有一个前台任务；下发前检查导航是否在跑、建图模式、定位分数、`map_id`、急停
+- **ROS 连接**（`backend/ros_link.py`）：后端进程内的 rclpy 节点，用 NavigateToPose action 发导航、拿结果，取代原来子进程 `ros2 action send_goal`；限速发 `/speed_limit`（`nav2_msgs/SpeedLimit`）
+- **地图标识**：`map_id` = 地图名，`version` = yaml+pgm 的 sha1 前 12 位。巡航路线存在 `<地图名>.annot.json` 的 `routes` 字段。切地图时结束正在跑的任务
+- **软件急停**：`robot_bridge` 订阅 `/robot/estop`（Bool，transient local），true 时输出 0、平滑状态清零。后端 `POST /api/v1/estop` 取消所有任务并拒绝新任务，要手动 `/estop/release`；急停状态存文件，后端重启后仍在。ROS 没连上时急停接口报错（不会假装成功）。网页状态页可急停 / 解除。**只是软件保护，不替代遥控器和硬件急停**
+- **旧接口**（`/api/points_goto`、`/api/nav/waypoints`、`/api/nav/cancel`）保留，内部改走任务层；网页上航点导航现在也是逐个单点 NavigateToPose，状态页不再出现「航点:」
+- 事件推送 `WS /api/v1/events?token=<token>`：1Hz 状态 + `task_state`、`progress`、`person_found`、`waiting`、`resumed`、`wait_timeout`、`estop`
+
+给上层（语音、平板、云）最常用的调用：
+
+```bash
+R=http://192.168.1.124:8000; H="Authorization: Bearer <token>"
+curl -s -H "$H" -H 'Content-Type: application/json' -X POST $R/api/v1/guide -d '{"point": "A会议室"}'   # 返回 task_id
+curl -s -H "$H" $R/api/v1/tasks/<task_id>     # 状态、剩余距离、预计时间
+curl -s -H "$H" -X POST $R/api/v1/estop
+```
+
+### 配置（`backend/config.yaml` 的 `tasks:`）
+
+- `min_score: 0.0`：定位分数门限，**0 = 不检查**，要上车看 `/localizer/score` 正常值后再定
+- `wait_on_person: false`：巡航中发现人自动停下等待，人员检测没实测前**默认关**
+- `guide_speed 0.15`、`person_distance 3.0`、`wait_timeout 120`、`person_cooldown 30`
+
+### 测试
+
+- 本机：`bash ros_ws/src/web/backend/tests/run.sh`（干净环境 + ROS + 仓库根 `.venv_web`；第一次要建 venv，命令在 run.sh 注释里），10-23 晚 88 个全过；`robot_bridge` 急停 gtest 在 `test_cmd_control`
+- 上机验证（**全部没做**，会让机器人动，人要在场、遥控器在手边）：plan Task 10 Step 1~8
+  1. rsync、`make_remote.sh --packages-select robot_bridge`、重启后端，日志里没有「任务层连不上 ROS」
+  2. 状态页设 `robot_id`（spec 里举例用 `max-001`，还没正式定；设了就不能再改，上云后 MQTT 账号和 topic 都用它）、生成 token；`~/max_robot/robot.yaml` 权限 `-rw-------`
+  3. 旧功能回归：点名导航、点航点、取消、切地图
+  4. curl 下发 goto，`/api/v1/events` 看到 running → succeeded
+  5. guide 限速：实际线速度应 ≤0.18。**超很多说明 Humble 的 MPPI 不认 `/speed_limit`**，改在 `ros_link.set_speed_limit` 里用 `ros2 param set /controller_server FollowPath.vx_max`
+  6. 巡航：建路线 → patrol → wait → 插 guide → resume → cancel
+  7. 急停：立即停车、任务 canceled、新任务返回 `ESTOPPED`、网页手动 cmd_vel 也不动；重启后端后仍急停；release 后起步平缓
+  8. 看 `/localizer/score` 正常值和跟丢时的值，定 `min_score`
+
+### 已知缺口
+
+- ROS 服务 `/points/goto` 和 `/person/approach` 直接发导航，不经过任务层，任务层不知道它们发的目标（急停仍会让 bridge 停车）
+- 剩余时间按「剩余距离 / 限速」粗估
+- 后端重启时正在跑的任务直接中断
+
+## 2026-10-23：云连通测试（进行中）
+
+已定：**在自己的 ECS 上用 docker 自建 EMQX**（不用阿里云 IoT 平台）；目前只有一台机器人；云上**不做**实时视频和远程遥控。
+
+ECS：阿里云华东1（杭州），实例 `i-bp126b3r9xltdbiti0d3`，Ubuntu 22.04，2 核 4G，40G ESSD，公网 IP **120.26.9.98**（非弹性 IP，释放重建会变），私网 172.23.98.134，100Mbps 峰值按流量计费，已装 docker 扩展。10-23 新建，**还没登录过**。
+
+10-23 测试结果：
+- 本机 → ECS：ping 通，0 丢包，延迟 31~121ms（平均 58）；端口只有 22 通，80/443/1883/8883/8083/18083 都不通（EMQX 没装 / 安全组没放行）
+- 本机 ssh `root@120.26.9.98` 报 `Permission denied (publickey)`：ECS 上没有本机公钥
+- 机器人 → ECS：没测成，当时机器人两个 IP（192.168.1.124 / 192.168.10.42）都连不上
+
+下一步：
+1. 控制台「远程连接」(Workbench) 登进去，把本机 `~/.ssh/id_ed25519.pub` 加进 `~/.ssh/authorized_keys`，确认用户名（root 还是 ecs-user）
+2. ECS 上 docker 起 EMQX；安全组放行 TCP 1883（调试）/ 8883（正式，TLS），管理后台 18083 只放行自己的 IP
+3. 机器人开机，ping、连 1883，然后机器人和 ECS 用 topic `robot/max-001/...` 互发一条消息；看机器人上有没有 `mosquitto_pub` / `paho-mqtt`
+4. 再写云端的 spec（cloud_agent 只调本地 `/api/v1`，见 10-22 第一节「上云」）
+
+还没定：MQTT 认证方式（用户名密码 / 每台证书）、TLS 证书来源、ECS 要不要换成弹性公网 IP 或绑域名、云端后端用什么写
 
 ## 2026-10-22：底盘控制闭环、速度估计、lio 去畸变、网页功能
 
@@ -82,7 +153,9 @@
 - controller_server 一直报 `Extrapolation Error ... map → base_footprint`（TF 比请求时刻晚约 57ms），lio TF 用的是扫描时间戳。`transform_tolerance` 0.5 兜住了，没影响控制，以后可以处理
 - 遥控器优先级最高，没关时 MCU 不执行 PC 指令：表现为 bridge 日志里指令正常、实测速度 0
 
-### 下一步：Win 主机 / 平板交互接口（只定了范围，还没写）
+### 下一步：Win 主机 / 平板交互接口
+
+> 10-23 已按这里的范围做成本地 `/api/v1`（见上面 10-23 第一节），API token 也做了。下面是当时定范围的记录；第 4 条人员定位结果的数据还没接。
 
 已定：
 - 传输：复用机器人 FastAPI 后端，加一组 `/api/v1` 接口。HTTP 请求/应答，WebSocket 推送状态和导航进度。网页、Win、平板共用
@@ -128,14 +201,11 @@
 
 开发阶段要从外网调试，可以先用 Tailscale / ZeroTier 组网直接访问网页和 ssh，只用于调试，不要当正式方案。
 
-还要用户确认：
-1. 云平台自建，还是用阿里云 / 华为云这类现成物联网平台
-2. 机器人数量（一台的话云端可以简单很多）
-3. 云上要不要实时视频 / 远程遥控（要的话得另走 WebRTC，工作量大不少）
+10-23 已确认：在自己的 ECS 上自建 EMQX；目前只有一台机器人；云上不做实时视频和远程遥控。进展见 10-23 第二节。
 
 ## 2026-10-22：BPU 模型 v2 + 人员跟踪 / 走到人面前
 
-> 核心代码（detector/geometry/tracker/person_tracker_node、ApproachPerson.action）在 `ce97711 人脸识别`；之后加的网页调试、`/person/state`、approach_client、单测、相机外参**还没提交**。都已 rsync 到机器人，`robot_interfaces`、`person_locator` 已编译。模型细节见 `ros_ws/src/person_locator/MODEL_HANDOFF.md`
+> 核心代码（detector/geometry/tracker/person_tracker_node、ApproachPerson.action）在 `ce97711 人脸识别`；之后加的网页调试、`/person/state`、approach_client、单测、相机外参在 `615cdad`。都已 rsync 到机器人，`robot_interfaces`、`person_locator` 已编译。模型细节见 `ros_ws/src/person_locator/MODEL_HANDOFF.md`
 
 ### 模型（调试版）
 
@@ -250,24 +320,17 @@
 
 ## 接手后第一件事
 
-```bash
-# 本机：提交 10-22 人员跟踪的剩余改动（核心代码已在 ce97711）
-cd /home/lsy/cs_project/robot
-git status
-git add HANDOFF.md ros_ws/src/person_locator ros_ws/src/robot_nav/launch \
-        ros_ws/src/web/backend/config.yaml ros_ws/src/web/backend/routers/stack.py ros_ws/src/web/backend/static \
-        ros_ws/src/web/frontend/src
-git commit -m "person: 网页调试面板与红点标记, approach_client, 单测; 相机外参 0.72m"
-git push
-# ros_ws/src/3rdparty/ 下的 libpointmatcher、pangolin、spdlog 不是这次的改动，别一起加
+代码都已提交（10-23 晚 `git status` 只有 `ros_ws/src/3rdparty/` 下的 libpointmatcher、pangolin、spdlog 未跟踪，不是项目改动，别加进去）。要做的是把 10-23 的代码同步上机器人：
 
-# 改了代码再同步、编译（本机执行 rsync，机器人上编译）
-bash rsync.sh
-# 机器人：cd ~/max_robot/ros_ws && bash make_remote.sh --packages-select robot_interfaces person_locator
+```bash
+# 本机（rsync.sh 里是有线 IP 192.168.10.42，走 Wi-Fi 时改成 192.168.1.124）
+cd /home/lsy/cs_project/robot && bash rsync.sh
+# 机器人：cd ~/max_robot/ros_ws && bash make_remote.sh --packages-select robot_bridge
+# 机器人上重启后端：pgrep -f "uvicorn main:app" 拿 PID 再 kill（不要 pkill -f），然后
+#   setsid nohup bash ~/max_robot/ros_ws/src/web/start.sh > /tmp/max_ui.log 2>&1 < /dev/null &
 ```
 
-后端已在机器人上跑着（`http://192.168.1.124:8000` 或 `192.168.10.42:8000`）。改了 `config.yaml` 要重启后端才能看到新进程 `person`：
-`setsid nohup bash ~/max_robot/ros_ws/src/web/start.sh > /tmp/max_ui.log 2>&1 < /dev/null &`（先按 PID 停掉旧的 uvicorn）
+然后按 10-23 第一节「上机验证」逐项测。10-23 晚机器人两个 IP 都连不上，开机后先确认 IP（`ip -br addr`），Wi-Fi 的 IP 可能因 DHCP 变了。
 
 登录：用户名 `max_robot`，密码默认也是 `max_robot`（`web/backend/config.yaml` 的 `auth.password`，部署前要改）。
 
