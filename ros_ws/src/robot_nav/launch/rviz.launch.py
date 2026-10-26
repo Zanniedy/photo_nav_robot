@@ -40,13 +40,6 @@ def generate_launch_description():
     tf_cam_optical = _stf('cam_optical', 'camera_link',    'camera_optical_frame', '0 0 0', '-1.5708 0 -1.5708')
     tf_imu         = _stf('imu',         'base_link',      'imu_link',             '0 0 0')
 
-    odom_path = Node(
-        package='robot_nav',
-        executable='odom_path_node',
-        name='odom_path_node',
-        output='screen',
-        parameters=[{'map_frame': 'map', 'max_poses': 5000}],
-    )
 
     rviz = Node(
         package='rviz2',
@@ -58,6 +51,5 @@ def generate_launch_description():
 
     return LaunchDescription([
         tf_base, tf_laser, tf_camera, tf_cam_optical, tf_imu,
-        odom_path,
         rviz,
     ])

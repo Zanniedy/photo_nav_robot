@@ -36,9 +36,11 @@ class DistanceField {
 public:
     // occ: 行优先，row 0 = y 最小（与 nav_msgs/OccupancyGrid 一致）
     void build(const std::vector<int8_t>& occ, int w, int h, double res,
-               double ox, double oy, int occ_thresh = 65, double max_dist = 0.5)
+               double ox, double oy, int occ_thresh = 65, double max_dist = 0.5, int free_thresh = 25)
     {
         w_ = w; h_ = h; res_ = res; ox_ = ox; oy_ = oy; max_dist_ = max_dist;
+        free_.resize(occ.size());
+        for (size_t i = 0; i < occ.size(); ++i) free_[i] = occ[i] >= 0 && occ[i] < free_thresh;
         // Felzenszwalb-Huttenlocher 精确 EDT，先列后行，单位：格²
         const double INF = 1e20;
         std::vector<double> f(static_cast<size_t>(w) * h);
@@ -60,6 +62,13 @@ public:
     }
 
     bool empty() const { return dist_.empty(); }
+    // 已知空闲格（重定位候选位置用；未知区域、障碍都不算）
+    bool is_free(double wx, double wy) const {
+        const int ix = static_cast<int>(std::floor((wx - ox_) / res_));
+        const int iy = static_cast<int>(std::floor((wy - oy_) / res_));
+        return ix >= 0 && iy >= 0 && ix < w_ && iy < h_ && free_[static_cast<size_t>(iy) * w_ + ix];
+    }
+    double extent() const { return std::hypot(w_ * res_, h_ * res_); }   // 地图对角线 m
     double resolution() const { return res_; }
     double max_dist() const { return max_dist_; }
 
@@ -106,6 +115,7 @@ private:
     }
 
     std::vector<float> dist_;
+    std::vector<uint8_t> free_;
     int w_{0}, h_{0};
     double res_{0.05}, ox_{0}, oy_{0}, max_dist_{0.5};
 };

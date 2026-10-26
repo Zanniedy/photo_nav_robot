@@ -47,6 +47,10 @@ class CameraNode(Node):
         self.width = self.declare_parameter('width', 1280).value
         self.height = self.declare_parameter('height', 720).value
         self.fps = self.declare_parameter('fps', 30).value
+        # 相机只有 30fps 一档；全分辨率 jpeg 经 rclpy 发 30Hz 要占满一个核（10-26 实测 ~100%），检测只要 4~6Hz。
+        # 读帧照常（不读 V4L2 缓冲会积压），只按这个频率发布；0 = 每帧都发
+        self.publish_rate = self.declare_parameter('publish_rate', 10.0).value
+        self.last_pub = 0.0
         self.frame_id = self.declare_parameter('frame_id', 'camera_optical_frame').value
         self.info_file = os.path.expanduser(
             self.declare_parameter('camera_info_file', '~/max_robot/calib/camera_info.yaml').value)
@@ -134,6 +138,10 @@ class CameraNode(Node):
                 time.sleep(0.03)
                 continue
             fails = 0
+            now = time.time()
+            if self.publish_rate > 0 and now - self.last_pub < 1.0 / self.publish_rate:
+                continue
+            self.last_pub = now
             self.publish(buf.tobytes())
 
     def publish(self, jpeg):

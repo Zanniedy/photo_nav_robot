@@ -5,7 +5,7 @@ import { subscribe } from './ros.js'
 
 const LAYERS_KEY = 'robot-ui-layers'
 function loadLayers() {
-  const def = { map: true, globalCost: false, localCost: true, scan: true, plan: true, trail: true, grid: true, shapes: true, points: true }
+  const def = { map: true, globalCost: false, localCost: true, scan: true, plan: true, grid: true, shapes: true, points: true }
   try { return { ...def, ...JSON.parse(localStorage.getItem(LAYERS_KEY) || '{}') } } catch { return def }
 }
 

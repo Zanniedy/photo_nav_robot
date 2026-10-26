@@ -30,13 +30,6 @@ def generate_launch_description():
     use_sim_time    = LaunchConfiguration('use_sim_time')
     default_use_sim = 'true' if cfg['common']['use_sim_time'] else 'false'
 
-    odom_path = Node(
-        package='robot_nav',
-        executable='odom_path_node',
-        name='odom_path_node',
-        output='screen',
-        parameters=[{'map_frame': 'map', 'max_poses': 5000, 'use_sim_time': use_sim_time}],
-    )
 
     rviz = Node(
         package='rviz2',
@@ -49,6 +42,5 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value=default_use_sim),
-        odom_path,
         rviz,
     ])

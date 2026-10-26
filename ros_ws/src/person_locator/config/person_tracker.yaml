@@ -3,6 +3,13 @@ person_tracker:
   ros__parameters:
     model_path: ~/max_robot/models/yolo26s_seg_bpu.bin   # 同目录要有 yolo26s_seg_bpu_outputs.json
     conf: 0.4                  # person 框的分数阈值
+
+    # 人脸（YuNet，在人体框上半部分里找；opencv_zoo face_detection_yunet_2023mar.onnx，要 OpenCV >= 4.8）
+    face_model: ~/max_robot/models/face_detection_yunet_2023mar.onnx
+    face_conf: 0.6
+    require_face: true         # approach 只锁定最近 face_within 秒内看到过脸的人（每次开始时读，网页可改）
+    face_within: 1.5
+    fallback_hfov_deg: 70.0    # 没有对应分辨率的标定时按这个水平视场估内参；0 = 等标定
     max_det_rate: 10.0         # 检测频率上限 Hz（实际受 BPU 速度限制）
     track_frame: map           # 只建图/没有 map 时可以改成 lio_odom
     base_frame: base_footprint
@@ -25,3 +32,7 @@ person_tracker:
     replan_dist: 0.5           # face_front=false：人移动超过这个距离就更新导航目标 m
     face_front: false          # true：锁定后按检测框粗匹配出人的位置，记下人面前的目标位姿，直到导航结束不再更新
     mark_frames: 3             # face_front=true 时用几次相机观测做平均
+
+    # 相机-雷达外参标定（/person/extcal_*，网页「人员跟随」里）
+    extrinsic_file: ~/max_robot/calib/camera_extrinsic.yaml   # robot.launch.py 读同一个文件
+    extcal_search_deg: 20.0    # 相机方位两边多大范围内找激光里的人

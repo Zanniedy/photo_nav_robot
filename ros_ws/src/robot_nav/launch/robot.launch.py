@@ -32,6 +32,23 @@ def _load_lc():
 lc_mod = _load_lc()
 # --------------------
 
+CAMERA_EXTRINSIC = os.path.expanduser('~/max_robot/calib/camera_extrinsic.yaml')
+
+
+def _camera_yaw():
+    """相机相对车体的 yaw（rad），文件不存在或读不了就当 0"""
+    try:
+        import yaml
+        with open(CAMERA_EXTRINSIC, encoding='utf-8') as f:
+            yaw = float(yaml.safe_load(f)['base_link_to_camera_link']['yaw'])
+        print(f'[robot.launch] 相机 yaw = {yaw:.5f} rad（{CAMERA_EXTRINSIC}）')
+        return yaw
+    except FileNotFoundError:
+        return 0.0
+    except Exception as e:   # noqa: BLE001  标定文件坏了不能让整个 launch 起不来
+        print(f'[robot.launch] 读 {CAMERA_EXTRINSIC} 失败，相机 yaw 用 0: {e}')
+        return 0.0
+
 
 def generate_launch_description():
     cfg          = lc_mod.load()
@@ -66,8 +83,10 @@ def generate_launch_description():
     # 雷达 x 轴朝车体左侧：2026-10-14 实测 Vy+(前进) 时 scan 匹配位移在雷达系 -y 方向，故 yaw=+90°
     # （old-style 参数顺序 x y z yaw pitch roll）
     tf_laser       = static_tf('laser',       'base_link',      'laser',                '0.25 0 -0.1', '1.5708 0 0')
-    # 相机在雷达正上方 0.72m（2026-10-22 实测），朝向和车体一致；雷达 z=-0.1 → 相机 z=0.62
-    tf_camera      = static_tf('camera',      'base_link',      'camera_link',          '0.25 0 0.62')
+    # 相机在雷达正上方 0.72m（2026-10-22 实测）；雷达 z=-0.1 → 相机 z=0.62
+    # yaw 来自相机-雷达联合标定（person_tracker /person/extcal_save），没标过就是 0
+    tf_camera      = static_tf('camera',      'base_link',      'camera_link',          '0.25 0 0.62',
+                               f'{_camera_yaw():.5f} 0 0')
     tf_cam_optical = static_tf('cam_optical', 'camera_link',    'camera_optical_frame', '0 0 0', '-1.5708 0 -1.5708')
     tf_imu         = static_tf('imu',         'base_link',      'imu_link',             '0 0 0')
 
@@ -99,6 +118,9 @@ def generate_launch_description():
             'use_sim_time': False,
             'publish_tf':   not use_ekf,
         }],
+        # libpointmatcher / libnabo 用 OpenMP：默认 8 个线程、每个线程处理完还要自旋等活，
+        # 10-26 实测 8 个线程各占 10%（几百个点根本用不上）。限 1 线程、不自旋
+        additional_env={'OMP_NUM_THREADS': '1', 'OMP_WAIT_POLICY': 'PASSIVE'},
     )
 
     lio_ekf = Node(

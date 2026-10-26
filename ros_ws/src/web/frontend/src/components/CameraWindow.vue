@@ -11,7 +11,20 @@
     </div>
 
     <div class="img-wrap">
-      <img v-if="src" :src="src" alt="相机画面" />
+      <div v-if="src" class="stage">
+        <img :src="src" alt="相机画面" />
+        <svg v-if="showBoxes" class="ov" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+          <g v-for="(d, i) in boxes" :key="i">
+            <rect :x="d.b[0]" :y="d.b[1]" :width="d.b[2] - d.b[0]" :height="d.b[3] - d.b[1]" class="pbox" />
+            <rect v-if="d.f" :x="d.f[0]" :y="d.f[1]" :width="d.f[2]" :height="d.f[3]" :class="d.front ? 'fbox' : 'fbox side'" />
+          </g>
+        </svg>
+        <div v-if="showBoxes" class="ov-lbl">
+          <span v-for="(d, i) in boxes" :key="i" :style="{ left: d.b[0] * 100 + '%', top: d.b[1] * 100 + '%' }">
+            人 {{ d.s.toFixed(2) }}<template v-if="d.f"> · 脸 {{ d.fs.toFixed(2) }}{{ d.front ? '' : ' 侧' }}</template>
+          </span>
+        </div>
+      </div>
       <div v-else class="empty muted">
         <template v-if="!camRunning">相机进程未运行
           <button class="sm" :disabled="!!store.busy" @click="startProc('camera')">启动相机</button></template>
@@ -28,6 +41,14 @@
           连拍 {{ burst ? '停' : '' }}</button>
         <input v-model.number="burstSec" class="num" type="number" min="0.2" step="0.5" title="连拍间隔（秒）" /> s
         <label class="chk" title="每拍一张同时下载到这台电脑"><input v-model="autoDl" type="checkbox" />同时下载</label>
+        <label class="chk" title="叠加 person 进程的检测结果：绿框=人，红框=正脸，黄框=侧脸（检测约 4~6Hz，比画面慢一点）">
+          <input v-model="boxOn" type="checkbox" />检测框</label>
+        <template v-if="boxOn">
+          <button v-if="!personRunning" class="sm" :disabled="!!store.busy || !camRunning" title="调试用：启动 person 进程（检测框来自它）"
+                  @click="startProc('person')">启动检测</button>
+          <button v-else class="sm" :disabled="!!store.busy" title="停止 person 进程" @click="stopProc('person')">停止检测</button>
+          <span v-if="personRunning && !personOnline()" class="small muted">启动中…</span>
+        </template>
       </div>
       <div class="line wrap">
         <span class="small">机器人上 <b>{{ cap.count }}</b> 张 · {{ (cap.bytes / 1048576).toFixed(1) }} MB</span>
@@ -82,6 +103,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { api } from '../lib/api.js'
 import { subscribe, callService, rosState } from '../lib/ros.js'
 import { store, run, toast } from '../lib/store.js'
+import { person, personOnline } from '../lib/person.js'
 
 const mode = ref('preview')
 const src = ref('')
@@ -90,8 +112,14 @@ const r = computed(() => st.value?.result)
 const procs = computed(() => store.status.processes)
 const camRunning = computed(() => !!procs.value.camera?.running)
 const calibRunning = computed(() => !!procs.value.calib?.running)
+const personRunning = computed(() => !!procs.value.person?.running)
 const topic = computed(() => mode.value === 'calib' ? '/calib/preview/compressed' : '/camera/preview/compressed')
 const fps = computed(() => rosState.rates[topic.value] || 0)
+
+// 检测框：来自 /person/state 的 boxes（归一化坐标）
+const boxOn = ref(true)
+const boxes = computed(() => (person.t, person.state?.boxes || []))
+const showBoxes = computed(() => mode.value === 'preview' && boxOn.value && boxes.value.length > 0)
 
 let unsubImg = null
 let unsubSt = null
@@ -210,6 +238,14 @@ async function reset() {
 .spacer { flex: 1; }
 .img-wrap { background: #000; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; }
 .img-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.stage { position: relative; width: 100%; height: 100%; }
+.ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.ov rect { fill: none; vector-effect: non-scaling-stroke; stroke-width: 2; }
+.ov .pbox { stroke: #2ecc71; }
+.ov .fbox { stroke: #ff3b3b; }
+.ov .fbox.side { stroke: #f1c40f; }
+.ov-lbl { position: absolute; inset: 0; pointer-events: none; }
+.ov-lbl span { position: absolute; transform: translateY(-100%); background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; padding: 0 4px; white-space: nowrap; }
 .empty { display: flex; gap: 8px; align-items: center; }
 .calib { padding: 6px 10px 10px; }
 .line { display: flex; gap: 6px; align-items: center; margin: 4px 0; }

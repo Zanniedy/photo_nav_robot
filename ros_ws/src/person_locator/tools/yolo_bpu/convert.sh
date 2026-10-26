@@ -53,4 +53,4 @@ cp "$OUT/${NAME}_outputs.json" "$OUT/model_output/"
 echo
 echo "完成: $BIN"
 echo "量化精度看 $OUT/model_output 里 hb_mapper_makertbin.log 的 cosine similarity（输出层 >0.99 为好）"
-echo "上板: scp $BIN $OUT/model_output/${NAME}_outputs.json sunrise@192.168.10.42:~/max_robot/models/"
+echo "上板: scp $BIN $OUT/model_output/${NAME}_outputs.json sunrise@<机器人IP>:~/max_robot/models/"

@@ -49,7 +49,7 @@ bt_navigator:
     robot_base_frame: base_footprint
     odom_topic: /lio_ekf_odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    default_server_timeout: 1000   # ms，BT 等 action server 确认的时间。20 在板子负载 10+ 时全超时（10-26），bt_navigator 直接挂掉
     wait_for_service_timeout: 1000
     # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
     # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml

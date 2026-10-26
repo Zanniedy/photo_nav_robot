@@ -193,8 +193,12 @@ private:
 
             // yaw update
             for (const auto& m : yaw_work) {
-                if (initialized)
-                    ekf_.update_yaw(m.yaw);
+                if (!initialized) continue;
+                const bool first = !ekf_.yaw_aligned();
+                ekf_.update_yaw(m.yaw);
+                if (first)
+                    RCLCPP_INFO(get_logger(), "/robot/yaw aligned to lio frame: offset %.2f deg",
+                                ekf_.yaw_offset() * 180.0 / M_PI);
             }
 
             // lio update
@@ -209,7 +213,7 @@ private:
                     ekf_.update_lio(m.px, m.py, m.yaw);
                 }
                 if (!vel_kf_.step(m.stamp, m.px, m.py, m.valid))
-                    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
                         "velocity KF: lio position outlier rejected");
                 latest_stamp = m.stamp;
                 updated = true;

@@ -5,7 +5,8 @@
 
 set -e
 
-REMOTE="sunrise@192.168.10.42"
+# 默认走有线；临时走无线（手机热点，DHCP 地址会变）：ROBOT=sunrise@<ip> bash rsync.sh
+REMOTE="${ROBOT:-sunrise@192.168.10.42}"
 SSH="env -i HOME=/home/lsy PATH=/usr/bin:/usr/sbin:/bin:/sbin LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu ssh"
 RSYNC="env -i HOME=/home/lsy PATH=/usr/bin:/usr/sbin:/bin:/sbin LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu rsync -avz --progress"
 DEB_DIR="/tmp/arm64_debs"

@@ -90,7 +90,6 @@ const LAYERS = [
   { id: 'localCost', label: '局部 costmap', color: '#2dd', topic: '/local_costmap/costmap' },
   { id: 'scan', label: '激光 /scan', color: '#f44', topic: '/scan' },
   { id: 'plan', label: '路径 /plan', color: '#4f4', topic: '/plan' },
-  { id: 'trail', label: '轨迹', color: '#fa0' },
   { id: 'shapes', label: '绘图标注', color: '#fc0' },
   { id: 'points', label: '点位', color: '#2ee6a6' },
   { id: 'person', label: '人员跟踪（红点=记住的位置）', color: '#ff2a2a', topic: '/person/state' },
@@ -118,7 +117,6 @@ const frameOptions = computed(() => {
 // 最新数据
 const layersData = { map: null, globalCost: null, localCost: null }   // {img, info, frame}
 let scan = null, plan = null, localPlan = null
-let trail = []
 let W = 0, H = 0, dpr = 1
 let dirty = true, raf = 0
 const unsubs = []
@@ -189,7 +187,7 @@ onUnmounted(() => { cancelAnimationFrame(raf); unsubs.forEach((u) => u()) })
 onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 
-watch(() => store.fixedFrame, () => { trail = []; dirty = true })
+watch(() => store.fixedFrame, () => { dirty = true })
 watch(() => [store.layers, store.waypoints, store.goal, store.tool, store.drawType], () => { dirty = true; if (store.tool !== 'draw') cancelDraft() }, { deep: true })
 watch(() => [annot.shapes, annot.points, annot.selected, annot.selectedPoint], () => { dirty = true }, { deep: true })
 watch(() => person.t, () => { dirty = true })
@@ -719,21 +717,6 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   if (L.grid) drawGrid(ctx)
 
-  const robot = lookup(store.fixedFrame, 'base_footprint')
-  if (robot) {
-    const last = trail[trail.length - 1]
-    if (!last || Math.hypot(robot.x - last[0], robot.y - last[1]) > 0.03) {
-      trail.push([robot.x, robot.y])
-      if (trail.length > 5000) trail.shift()
-    }
-  }
-  if (L.trail && trail.length > 1) {
-    ctx.strokeStyle = 'rgba(255,170,0,0.7)'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    trail.forEach(([x, y], i) => { const [sx, sy] = w2s(x, y); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy) })
-    ctx.stroke()
-  }
   if (L.plan) {
     drawPath(ctx, plan, '#3ef06a', 3)
     drawPath(ctx, localPlan, '#f0e03e', 2)
@@ -768,6 +751,7 @@ function draw() {
   }
 
   if (L.person !== false) drawPerson(ctx)
+  const robot = lookup(store.fixedFrame, 'base_footprint')
   if (robot) drawRobot(ctx, robot)
 
   if (drag && drag.kind === 'pose') {

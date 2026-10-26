@@ -18,6 +18,8 @@ map_dirs:
 
 # 运行时状态（默认地图、各地图的初始位姿），网页上改了会写回这里
 state_file: "~/max_robot/robot_ui_state.json"
+# 巡逻路线参数文件：按点位名写路线，后端启动和每次起导航时同步进地图（只生成路线，不自动巡逻），格式见 patrol.example.yaml
+patrol_file: "~/max_robot/patrol.yaml"
 
 # 每张地图的绘图标注和命名点位（web 和 ROS points_server 共用）
 annotations_dir: "~/max_robot/annotations"
@@ -38,10 +40,37 @@ tasks:
   wait_timeout: 120       # 等待多久没人 resume 就自动继续，0 = 一直等
   person_cooldown: 30     # resume 后多少秒内不再因为发现人停下
 
+# 巡逻中遇到人（greeter.py）：看到人脸且 <= detect_distance → 暂停巡逻、走向人（search）
+#   → 跟踪距离 <= greet_distance（近处人脸拍不全，按激光+跟踪的距离算）→ LED 显示 text（greet）
+#   → hold 秒后换回眼睛、继续巡逻。要 led、person、nav 进程在跑
+greet:
+  enabled: true
+  only_patrol: true       # false = 不巡逻也触发（调试用）
+  text: "hello i am max"
+  detect_distance: 5.0    # 看到人脸、这么近以内才进 search m
+  greet_distance: 2.0     # 走到离人这么近打招呼 m
+  approach_distance: 1.5  # /person/approach 停在离人多远 m（要小于 greet_distance）
+  search_timeout: 40      # search 最长 s
+  lost_timeout: 3         # search 中锁定的目标丢了多久放弃 s
+  lock_timeout: 8         # 开始走向人后多久还没锁定目标就放弃 s（person_tracker 自己找 5s）
+  hold: 8                 # 文字显示多久 s
+  cooldown: 20            # 结束后多久内不再触发 s
+  voice: greet            # 打招呼时同时播的语音（web/voice/greet_<lang>.wav），"" = 不播
+
+# 固定话语播放（voice.py）：wav 在本机用 web/voice/gen_voice.py（piper）预先合成，机器人上只播放
+voice:
+  enabled: true
+  lang: en                # zh / en
+  player: paplay          # 走 PulseAudio；也可以 "aplay -q"
+  # USB 声卡 HECATE G1200，按 by-id 绑定（/dev/snd/by-id/usb-_HECATE_G1200-00 → PulseAudio sink 名），换 USB 口不变
+  # 空 = 默认输出；换 aplay 时填 plughw:CARD=G1200
+  device: alsa_output.usb-_HECATE_G1200-00.analog-stereo
+
 # 后端启动时自动拉起的进程；若 state_file 里设置了默认地图，base 起来后会直接进导航
 #   points: 点位 ROS 服务 /points/*（依赖 robot_interfaces 已编译）
 #   camera: 前置相机（person_locator 已编译）
-autostart: [rosbridge, base, points, camera]
+#   led / person: LED 屏 + 人脸检测，巡逻遇人打招呼要用；person 常驻约占 1 个核（检测 + 人脸）
+autostart: [rosbridge, base, points, camera, led, person]
 
 # 各进程的启动命令（bash 执行，已 source ROS 环境）
 #   rosbridge: 只监听本机，外部经后端 /ros 代理（带登录校验）访问
@@ -50,7 +79,8 @@ autostart: [rosbridge, base, points, camera]
 #   nav:   map_server + 定位 + nav2，叠在 base 上；{map} 替换为地图 yaml 绝对路径
 #   camera: USB 相机，发 /camera/image_raw/compressed、/camera/preview/compressed、/camera/camera_info
 #   calib:  棋盘格在线标定，网页相机窗口里操作，结果写 ~/max_robot/calib/camera_info.yaml
-#   person: 人员跟踪 + /person/approach（走到人面前），要 camera 和导航在跑；网页「人员跟随」里调试
+#   led:    蓝牙 LED 软屏（led_display），平时显示眼睛，巡逻中看到人显示 greet.text
+#   person: 人员跟踪 + 人脸检测 + /person/approach（走到人面前）；检测只要 camera，跟踪和走过去要导航在跑
 processes:
   rosbridge: "ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=127.0.0.1 port:=9090"
   base: "ros2 launch robot_nav robot.launch.py slam:=false"
@@ -66,6 +96,9 @@ processes:
   calib: >-
     ros2 run person_locator calib_node --ros-args
     --params-file $(ros2 pkg prefix person_locator)/share/person_locator/config/camera.yaml
+  led: >-
+    ros2 run led_display led_node --ros-args
+    --params-file $(ros2 pkg prefix led_display)/share/led_display/config/led.yaml
   person: >-
     ros2 run person_locator person_tracker --ros-args
     --params-file $(ros2 pkg prefix person_locator)/share/person_locator/config/person_tracker.yaml
@@ -78,3 +111,4 @@ serial_devices:
   bridge: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
   lidar: "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_bc333ee39c31f1119715925f30d20014-if00-port0"
   camera: "/dev/v4l/by-id/usb-AX_USB2.0_AX_USB2.0-video-index0"
+  speaker: "/dev/snd/by-id/usb-_HECATE_G1200-00"     # 打招呼的 USB 声卡，和 voice.device 是同一个"

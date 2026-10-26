@@ -3,9 +3,12 @@
 camera_node:
   ros__parameters:
     device: /dev/v4l/by-id/usb-AX_USB2.0_AX_USB2.0-video-index0
-    width: 1280
-    height: 720
+    # 10-26 降到 640x480（1280x720 时读帧 + 发布占满一个核）。换分辨率后要在网页重新标定，
+    # 没标之前 person_tracker 按 fallback_hfov_deg 估内参
+    width: 640
+    height: 480
     fps: 30
+    publish_rate: 10.0   # 只按这个频率发布（相机只有 30fps 一档，全发要占满一个核）；0 = 每帧都发
     frame_id: camera_optical_frame
     camera_info_file: ~/max_robot/calib/camera_info.yaml   # 网页标定保存到这里，节点自动重载
     preview_fps: 10.0

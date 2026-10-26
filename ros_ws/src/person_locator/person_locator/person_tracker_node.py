@@ -3,16 +3,22 @@
 
 相机（BPU 检测 person 框）给方位，2D 激光在这个方位的扇形里取距离，得到人在 map 下的位置，
 再用卡尔曼滤波跟踪（相机远处检测不到时靠激光簇继续跟）。
+人脸（face.py，YuNet）只在人体框上半部分里找；require_face=true 时只锁定最近 face_within 秒内看到过脸的人。
 
 订阅:
     /camera/image_raw/compressed  /camera/camera_info  /scan
 发布:
     /person/markers   visualization_msgs/MarkerArray  所有轨迹（目标为绿色）、标记点、导航目标
     /person/target    geometry_msgs/PoseStamped       当前锁定目标的位置
-    /person/state     std_msgs/String                 JSON 调试状态（网页用）：轨迹、记住的位置（红点）、目标点、动作状态
+    /person/state     std_msgs/String                 JSON 调试状态（网页用）：轨迹、记住的位置（红点）、目标点、动作状态、外参标定
+    /person/arrived   std_msgs/String                 approach 成功到达人面前时发一次 JSON（给语音播报等上层用）:
+                      {"target_id", "person": [x, y], "robot": [x, y], "distance", "frame", "stamp"}
 服务（网页调试用，std_srvs/Trigger）:
     /person/approach_start   按当前参数（approach_distance、face_front）开始一次 approach
     /person/approach_cancel  取消正在执行的 approach
+    /person/extcal_start     相机-雷达外参标定：清空样本开始采集（画面里只站一个人，左右来回走，机器人别动）
+    /person/extcal_solve     停止采集并计算相机 yaw（extcal.py），结果在 /person/state 的 extcal 里
+    /person/extcal_save      把算出的 yaw 写到 extrinsic_file，robot.launch.py 下次启动时读（要重启 base 才生效）
 Action:
     /person/approach  robot_interfaces/action/ApproachPerson
         锁定最近的人 → 导航到离人 distance 米处、车头朝人
@@ -21,7 +27,7 @@ Action:
     false（默认）  目标点在「机器人→人」连线上，导航中人移动超过 replan_dist 就更新目标点
     true           锁定后用前 mark_frames 次相机观测粗匹配出人的位置，把「人面前 distance 米」的位姿
                    记下来，直到这次导航结束都按记下的位姿走，不再随跟踪更新。人的朝向取标记时
-                   人→机器人的方向（假设被识别时人面朝机器人；以后换人脸/pose 模型时改 _facing()）
+                   人→机器人的方向（require_face=true 时锁定前看到过正脸，这个假设基本成立）
 
     ros2 run person_locator person_tracker --ros-args --params-file config/person_tracker.yaml
     ros2 action send_goal /person/approach robot_interfaces/action/ApproachPerson "{distance: 3.0}" --feedback
@@ -31,6 +37,7 @@ import math
 import os
 import threading
 import time
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -53,6 +60,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from robot_interfaces.action import ApproachPerson
 
+from . import extcal
 from .geometry import (approach_goal, cluster_scan, cluster_stats, measure_in_window, pixel_rays,
                        quat_to_rot, ray_bearings, scan_points, wrap)
 from .tracker import Tracker
@@ -84,6 +92,14 @@ class PersonTracker(Node):
         self.replan_dist = p('replan_dist', 0.5).value
         self.mark_frames = p('mark_frames', 3).value
         self.declare_parameter('face_front', False)              # 每次 action 开始时读，可以运行中 param set
+        p('require_face', True)                                 # 每次 action 开始时读
+        self.face_within = p('face_within', 1.5).value
+        face_model = os.path.expanduser(p('face_model', '~/max_robot/models/face_detection_yunet_2023mar.onnx').value)
+        face_conf = p('face_conf', 0.6).value
+        # 没有对应分辨率的 camera_info 时，按这个水平视场角估一个无畸变针孔内参（0 = 不估，等标定）
+        self.fallback_hfov = p('fallback_hfov_deg', 70.0).value
+        self.extrinsic_file = os.path.expanduser(p('extrinsic_file', '~/max_robot/calib/camera_extrinsic.yaml').value)
+        self.extcal_search = math.radians(p('extcal_search_deg', 20.0).value)
         self.tracker = Tracker(lost_timeout=p('lost_timeout', 2.0).value,
                                cam_confirm_timeout=p('cam_confirm_timeout', 3.0).value)
 
@@ -96,12 +112,16 @@ class PersonTracker(Node):
         self.latest_img = None
         self.img_event = threading.Event()
         self.scan = None            # (t, pts_track, labels)
+        self.scan_raw = None        # (t, frame_id, pts_laser, labels)：外参标定用，不经过 map
+        self.extcal = {'on': False, 'samples': [], 'rel': [], 'skip': {'n_det': 0, 'sync': 0, 'no_match': 0},
+                       'result': None, 'saved': ''}
         self.cam_view = None        # (origin_xy, axis_bearing, half_fov)：判断「相机应该看得到」
         # 记住的人位置（红点）：导航目标就是按它算的。动作结束后保留（active=False），方便网页上对比
         self.mark = None            # {'xy': (x,y), 'frames': n, 'face_front': bool, 'active': bool}
         self.nav_goal = None        # 当前导航目标 (x,y,yaw)，显示用
         self.approach = {'state': 'idle', 'target_id': -1, 'distance': -1.0, 'message': ''}
-        self.det_stat = {'n': 0, 'ms': 0.0, 'hz': 0.0, 'with_range': 0}
+        self.det_boxes = {'t': 0.0, 'boxes': []}
+        self.det_stat = {'n': 0, 'ms': 0.0, 'hz': 0.0, 'with_range': 0, 'faces': 0, 'face_ms': 0.0}
 
         self.create_subscription(CameraInfo, '/camera/camera_info', self.on_info, SENSOR_QOS, callback_group=self.cb)
         self.create_subscription(CompressedImage, '/camera/image_raw/compressed', self.on_image, SENSOR_QOS,
@@ -110,6 +130,7 @@ class PersonTracker(Node):
         self.pub_markers = self.create_publisher(MarkerArray, '/person/markers', 10)
         self.pub_target = self.create_publisher(PoseStamped, '/person/target', 10)
         self.pub_state = self.create_publisher(String, '/person/state', 10)
+        self.pub_arrived = self.create_publisher(String, '/person/arrived', 10)
         self.create_timer(0.2, self.publish_vis, callback_group=self.cb)
 
         self.nav = ActionClient(self, NavigateToPose, '/navigate_to_pose', callback_group=self.cb)
@@ -121,9 +142,18 @@ class PersonTracker(Node):
         self.self_handle = None
         self.create_service(Trigger, '/person/approach_start', self.srv_start, callback_group=self.cb)
         self.create_service(Trigger, '/person/approach_cancel', self.srv_cancel, callback_group=self.cb)
+        self.create_service(Trigger, '/person/extcal_start', self.srv_extcal_start, callback_group=self.cb)
+        self.create_service(Trigger, '/person/extcal_solve', self.srv_extcal_solve, callback_group=self.cb)
+        self.create_service(Trigger, '/person/extcal_save', self.srv_extcal_save, callback_group=self.cb)
 
         from .detector import BpuPersonDetector
         self.detector = BpuPersonDetector(self.model_path, conf=self.conf)
+        self.face = None
+        if os.path.exists(face_model):
+            from .face import FaceDetector
+            self.face = FaceDetector(face_model, conf=face_conf)
+        else:
+            self.get_logger().warn(f'没有人脸模型 {face_model}，不做人脸检测（require_face 会一直找不到人）')
         self.running = True
         self.det_thread = threading.Thread(target=self.det_loop, daemon=True)
         self.det_thread.start()
@@ -131,11 +161,11 @@ class PersonTracker(Node):
                                f'face_front={self.get_parameter("face_front").value}')
 
     # ---------------- TF ----------------
-    def lookup(self, source, stamp=None):
-        """source → track_frame 的 (R 3x3, t 3)；按时间戳查不到就退回最新的"""
+    def lookup(self, source, stamp=None, target=None):
+        """source → target（默认 track_frame）的 (R 3x3, t 3)；按时间戳查不到就退回最新的"""
         for when in ([Time.from_msg(stamp)] if stamp is not None else []) + [Time()]:
             try:
-                tf = self.tf.lookup_transform(self.track_frame, source, when, timeout=Duration(seconds=0.05))
+                tf = self.tf.lookup_transform(target or self.track_frame, source, when, timeout=Duration(seconds=0.05))
                 q, t = tf.transform.rotation, tf.transform.translation
                 return quat_to_rot(q.x, q.y, q.z, q.w), np.array([t.x, t.y, t.z])
             except Exception:   # noqa: BLE001  tf2 的几种异常都按查不到处理
@@ -155,12 +185,13 @@ class PersonTracker(Node):
         self.img_event.set()
 
     def on_scan(self, msg):
+        pts = scan_points(msg.ranges, msg.angle_min, msg.angle_increment, msg.range_min, msg.range_max)
+        labels = cluster_scan(pts, self.cluster_jump)       # 在雷达系里聚类（扫描顺序是对的）
+        self.scan_raw = (stamp_sec(msg.header.stamp), msg.header.frame_id, pts, labels)
         T = self.lookup(msg.header.frame_id, msg.header.stamp)
         if T is None:
             self.get_logger().warn(f'没有 {msg.header.frame_id}→{self.track_frame} 的 TF', throttle_duration_sec=5.0)
             return
-        pts = scan_points(msg.ranges, msg.angle_min, msg.angle_increment, msg.range_min, msg.range_max)
-        labels = cluster_scan(pts, self.cluster_jump)       # 在雷达系里聚类（扫描顺序是对的）
         R, t = T
         pts_tr = pts @ R[:2, :2].T + t[:2]
         cents, widths, _ = cluster_stats(pts_tr, labels)
@@ -196,54 +227,163 @@ class PersonTracker(Node):
             except Exception as e:   # noqa: BLE001  单帧出错不能把线程弄死
                 self.get_logger().error(f'检测出错: {e}', throttle_duration_sec=5.0)
 
+    def _fallback_info(self, w, h):
+        info = CameraInfo(width=w, height=h)
+        fx = w / 2 / math.tan(math.radians(self.fallback_hfov) / 2)
+        info.k = [fx, 0.0, w / 2, 0.0, fx, h / 2, 0.0, 0.0, 1.0]
+        info.d = [0.0] * 5
+        return info
+
     def process(self, msg):
         info = self.info
-        if info is None:
+        if info is None and self.fallback_hfov <= 0:
             self.get_logger().warn('没有 /camera/camera_info（相机还没标定？）', throttle_duration_sec=10.0)
             return
-        # 1280x720 的 jpeg 直接按 1/2 解码成 640x360，letterbox 就不用再缩放
-        reduce = info.width >= 1280
+        # 1280 宽的 jpeg 直接按 1/2 解码（640x360），letterbox 就不用再缩放
+        reduce = info is not None and info.width >= 1280
         bgr = cv2.imdecode(np.frombuffer(msg.data, np.uint8),
                            cv2.IMREAD_REDUCED_COLOR_2 if reduce else cv2.IMREAD_COLOR)
         if bgr is None:
             return
+        if info is None:
+            info = self._fallback_info(bgr.shape[1], bgr.shape[0])
+            self.get_logger().warn(f'没有 camera_info，按水平视场 {self.fallback_hfov:.0f}° 估内参（方位不准，请重新标定）',
+                                   throttle_duration_sec=30.0)
         t_det = time.time()
         dets = self.detector(bgr)
         ms = (time.time() - t_det) * 1e3
+        t_face = time.time()
+        faces = self.face(bgr, dets) if self.face is not None and len(dets) else [None] * len(dets)
+        face_ms = (time.time() - t_face) * 1e3
         dets[:, :4] *= info.width / bgr.shape[1]
+        self.det_boxes = self._boxes_json(dets, faces, info, bgr.shape)
+        # 统计放在 TF 之前：没开导航（没有 map）时网页上也能看到检测在跑
+        st = self.det_stat
+        dt = time.time() - st.get('t', time.time() - 1)
+        st.update(n=len(dets), with_range=0, ms=0.8 * st['ms'] + 0.2 * ms, faces=sum(f is not None for f in faces),
+                  face_ms=0.8 * st['face_ms'] + 0.2 * face_ms, hz=0.8 * st['hz'] + 0.2 / max(dt, 1e-3), t=time.time())
+        K, D = np.array(info.k).reshape(3, 3), list(info.d)
+        if self.extcal['on']:
+            self._extcal_sample(msg, dets, K, D, info.width)
 
         T = self.lookup(msg.header.frame_id, msg.header.stamp)
         if T is None:
             self.get_logger().warn(f'没有 {msg.header.frame_id}→{self.track_frame} 的 TF', throttle_duration_sec=5.0)
             return
         R, t = T
-        K, D = np.array(info.k).reshape(3, 3), list(info.d)
         origin = t[:2]
         axis = ray_bearings(pixel_rays([[K[0, 2], K[1, 2]]], K, D), R)[0]
         half_fov = math.atan(info.width / 2 / K[0, 0])
         now = stamp_sec(msg.header.stamp)
 
-        zs = []
+        zs, zf = [], []
         with self.lock:
             self.cam_view = (origin, axis, half_fov)
             scan = self.scan
         if scan is not None and len(dets):
             _, pts, labels = scan
-            for x1, y1, x2, y2, _s in dets:
+            for (x1, y1, x2, y2, _s), f in zip(dets, faces):
                 uc, v, hw = (x1 + x2) / 2, (y1 + y2) / 2, (x2 - x1) / 2 * self.window_shrink
                 b = ray_bearings(pixel_rays([[uc, v], [uc - hw, v], [uc + hw, v]], K, D), R)
                 m = measure_in_window(pts, labels, origin, b[0], abs(wrap(b[1] - b[2])) / 2,
                                       self.body_radius, min_width=self.min_width, max_width=self.max_width)
                 if m is not None:
                     zs.append(m[0])
-        st = self.det_stat
-        dt = time.time() - st.get('t', time.time() - 1)
-        st.update(n=len(dets), with_range=len(zs), ms=0.8 * st['ms'] + 0.2 * ms,
-                  hz=0.8 * st['hz'] + 0.2 / max(dt, 1e-3), t=time.time())
+                    zf.append(f is not None)
+        st['with_range'] = len(zs)
         with self.lock:
             if zs:
-                self.tracker.update_camera(now, zs)
+                self.tracker.update_camera(now, zs, zf)
             self.tracker.prune(now, self.in_camera_view)
+
+    @staticmethod
+    def _boxes_json(dets, faces, info, shape):
+        """网页相机预览上画框用：坐标归一化到 0~1"""
+        from .face import is_frontal
+        W, H, w, h = info.width, info.height, shape[1], shape[0]
+        out = []
+        for (x1, y1, x2, y2, s), f in zip(dets, faces):
+            out.append({'b': [round(float(v), 4) for v in (x1 / W, y1 / H, x2 / W, y2 / H)], 's': round(float(s), 2),
+                        'f': None if f is None else [round(float(v), 4) for v in (f[0] / w, f[1] / h, f[2] / w, f[3] / h)],
+                        'fs': None if f is None else round(float(f[-1]), 2),
+                        'front': None if f is None else is_frontal(f)})
+        return {'t': time.time(), 'boxes': out}
+
+    # ---------------- 相机-雷达外参标定 ----------------
+    def _extcal_sample(self, msg, dets, K, D, width):
+        """一帧只有一个人时，记 (框中心 u, 相机方位, 雷达方位)，都在 base_frame 下"""
+        ec = self.extcal
+        if len(dets) != 1:
+            ec['skip']['n_det'] += 1
+            return
+        raw = self.scan_raw
+        if raw is None or abs(raw[0] - stamp_sec(msg.header.stamp)) > 0.15:
+            ec['skip']['sync'] += 1
+            return
+        T_cam = self.lookup(msg.header.frame_id, target=self.base_frame)
+        T_las = self.lookup(raw[1], target=self.base_frame)
+        if T_cam is None or T_las is None:
+            return
+        x1, y1, x2, y2, _s = dets[0]
+        uc, v = (x1 + x2) / 2, (y1 + y2) / 2
+        b = ray_bearings(pixel_rays([[uc, v], [K[0, 2], K[1, 2]]], K, D), T_cam[0])
+        pts = raw[2] @ T_las[0][:2, :2].T + T_las[1][:2]
+        m = extcal.match_lidar(pts, raw[3], T_cam[1][:2], b[0], search=self.extcal_search,
+                               min_width=self.min_width, max_width=self.max_width)
+        if m is None:
+            ec['skip']['no_match'] += 1
+            return
+        if len(ec['samples']) < 1000:
+            ec['samples'].append((float(uc), float(b[0]), m[0]))
+            ec['rel'].append(wrap(m[0] - b[1]))      # 相对当前光轴的方位，左正右负
+            ec['axis'], ec['fx'], ec['width'] = float(b[1]), float(K[0, 0]), float(width)
+
+    def srv_extcal_start(self, _req, res):
+        self.extcal.update(on=True, samples=[], rel=[], skip={'n_det': 0, 'sync': 0, 'no_match': 0}, result=None, saved='')
+        res.success, res.message = True, '开始采集：画面里只站一个人，在 1~5m 处左右来回慢慢走，机器人别动'
+        return res
+
+    def srv_extcal_solve(self, _req, res):
+        ec = self.extcal
+        ec['on'] = False
+        if not ec['samples']:
+            res.success, res.message = False, '没有样本'
+            return res
+        r = extcal.solve(list(ec['samples']), ec['axis'], ec['width'], fx_now=ec['fx'])
+        ec['result'] = r
+        res.success = r['ok']
+        res.message = (f'yaw {r["yaw_deg"]:+.2f}°（修正 {r["delta_deg"]:+.2f}°），残差 {r["rms_deg"]:.2f}°，'
+                       f'{r["inliers"]}/{r["n"]} 个样本' + (f'；{r["message"]}' if r['message'] else '')
+                       if r['ok'] else r['message'])
+        self.get_logger().info(f'外参标定: {res.message}')
+        return res
+
+    def srv_extcal_save(self, _req, res):
+        r = self.extcal['result']
+        if not r or not r['ok']:
+            res.success, res.message = False, '还没有有效的标定结果'
+            return res
+        T = self.lookup('camera_link', target='base_link')
+        xyz = [round(float(v), 3) for v in T[1]] if T is not None else None
+        os.makedirs(os.path.dirname(self.extrinsic_file), exist_ok=True)
+        with open(self.extrinsic_file, 'w', encoding='utf-8') as f:
+            f.write('# 相机-雷达联合标定结果（person_tracker /person/extcal_*）。robot.launch.py 启动时读 yaw\n'
+                    f'# {datetime.now():%Y-%m-%d %H:%M:%S}，{r["inliers"]}/{r["n"]} 个样本，残差 {r["rms_deg"]:.2f}°，'
+                    f'方位覆盖 {r["spread_deg"]:.0f}°，针孔粗估 fx={r["fx_pinhole"]}\n'
+                    f'base_link_to_camera_link:\n'
+                    f'  yaw: {r["yaw"]:.5f}        # rad（{r["yaw_deg"]:+.2f}°），左正\n'
+                    f'  xyz_at_calib: {xyz}   # 标定时 TF 里的平移，只做记录，平移仍以 launch 为准\n')
+        self.extcal['saved'] = self.extrinsic_file
+        res.success, res.message = True, f'已保存到 {self.extrinsic_file}，重启 base（robot.launch.py）后生效'
+        self.get_logger().info(res.message)
+        return res
+
+    def _extcal_state(self):
+        ec = self.extcal
+        return {'on': ec['on'], 'n': len(ec['samples']), 'skip': ec['skip'], 'coverage': extcal.coverage(ec['rel']),
+                'result': None if ec['result'] is None else
+                {k: (round(v, 3) if isinstance(v, float) else v) for k, v in ec['result'].items()},
+                'saved': ec['saved']}
 
     # ---------------- 走到人面前 ----------------
     def on_goal(self, _req):
@@ -311,6 +451,16 @@ class PersonTracker(Node):
                 self.mark['active'] = False
             self.nav_goal, self.self_handle, self.busy = None, None, False
 
+    def _publish_arrived(self, tr, person_xy):
+        """到达人面前：发 /person/arrived，语音播报等上层订阅这个话题"""
+        robot = self.robot_xy()
+        p = np.asarray(person_xy, float)
+        msg = {'target_id': tr.id, 'person': [round(float(v), 3) for v in p],
+               'robot': None if robot is None else [round(float(v), 3) for v in robot],
+               'distance': None if robot is None else round(float(np.hypot(*(p - robot))), 3),
+               'frame': self.track_frame, 'stamp': time.time()}
+        self.pub_arrived.publish(String(data=json.dumps(msg)))
+
     def _canceled(self, gh, res):
         gh.canceled()
         res.message = '已取消'
@@ -323,6 +473,7 @@ class PersonTracker(Node):
         dist = req.distance if req.distance > 0 else self.get_parameter('approach_distance').value
         search_to = req.search_timeout if req.search_timeout > 0 else self.get_parameter('search_timeout').value
         face_front = self.get_parameter('face_front').value
+        face_within = self.face_within if self.get_parameter('require_face').value else None
         t0 = time.time()
         res = ApproachPerson.Result()
         fb = ApproachPerson.Feedback()
@@ -360,11 +511,11 @@ class PersonTracker(Node):
             if gh.is_cancel_requested:
                 return self._canceled(gh, res)
             if time.time() - t0 > search_to:
-                return finish(False, f'{search_to:.0f}s 内没看到人')
+                return finish(False, f'{search_to:.0f}s 内没看到{"人脸" if face_within else "人"}')
             robot = self.robot_xy()
             if robot is not None:
                 with self.lock:
-                    tr, _ = self.tracker.target(robot, self.get_clock().now().nanoseconds * 1e-9)
+                    tr, _ = self.tracker.target(robot, self.get_clock().now().nanoseconds * 1e-9, face_within)
             feedback('searching', tr, robot)
             time.sleep(0.1)
         self.get_logger().info(f'锁定 #{tr.id}，距离 {np.hypot(*(tr.xy - robot)):.2f}m，face_front={face_front}')
@@ -419,7 +570,7 @@ class PersonTracker(Node):
             robot = self.robot_xy()
             now = self.get_clock().now().nanoseconds * 1e-9
             with self.lock:
-                cur, changed = self.tracker.target(robot, now) if robot is not None else (None, False)
+                cur, changed = self.tracker.target(robot, now, face_within) if robot is not None else (None, False)
             if cur is None:
                 state = 'lost'          # 继续开往最后的目标点
             else:
@@ -440,6 +591,7 @@ class PersonTracker(Node):
                 status = result.result().status
                 if status == GoalStatus.STATUS_SUCCEEDED:
                     feedback('arrived', tr, robot)
+                    self._publish_arrived(tr, goal_person)
                     note = '（途中目标丢失，停在最后的目标点）' if state == 'lost' else ''
                     return finish(True, f'已到达人前 {dist:.1f}m{note}', tr, robot)
                 return finish(False, f'导航失败，状态 {status}', tr, robot)
@@ -491,6 +643,7 @@ class PersonTracker(Node):
         with self.lock:
             trs = [{'id': tr.id, 'x': round(float(tr.x[0]), 3), 'y': round(float(tr.x[1]), 3),
                     'speed': round(tr.speed, 2), 'cam_age': round(now - tr.t_cam, 1),
+                    'face_age': round(now - tr.t_face, 1) if tr.t_face > -math.inf else None,
                     'target': tr.id == self.tracker.target_id} for tr in self.tracker.tracks]
         st = {k: (round(v, 1) if isinstance(v, float) else v) for k, v in self.det_stat.items() if k != 't'}
         state = {
@@ -498,8 +651,12 @@ class PersonTracker(Node):
             'mark': None if mark is None else {**mark, 'xy': [round(v, 3) for v in mark['xy']]},
             'goal': None if goal is None else [round(float(v), 3) for v in goal],
             'approach': self.approach, 'busy': self.busy, 'det': st,
-            'params': {k: self.get_parameter(k).value for k in ('face_front', 'approach_distance', 'search_timeout')},
+            'params': {k: self.get_parameter(k).value for k in ('face_front', 'require_face', 'approach_distance', 'search_timeout')},
+            'face_model': self.face is not None,
             'camera_info': self.info is not None,
+            'extcal': self._extcal_state(),
+            # 检测框（1s 内的才发，节点卡住时网页上不会一直留着旧框）
+            'boxes': self.det_boxes['boxes'] if time.time() - self.det_boxes['t'] < 1.0 else [],
         }
         self.pub_state.publish(String(data=json.dumps(state, ensure_ascii=False)))
 

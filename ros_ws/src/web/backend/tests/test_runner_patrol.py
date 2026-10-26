@@ -212,3 +212,16 @@ def test_map_switched_fails_patrol_and_subtask():
     assert r.get(p["id"])["state"] == "failed" and r.get(p["id"])["message"] == "地图已切换"
     assert r.get(g["id"])["state"] == "failed"
     assert r.current() == {"foreground": None, "patrol": None}
+
+
+def test_patrol_waits_and_retries_when_nav2_rejects():
+    r, nav, clock, _ = mk()
+    t = r.submit("patrol", route(), loop=True)
+    nav.callback(False, "nav2 拒绝了目标")              # bt_navigator 没激活
+    s = r.get(t["id"])
+    assert s["state"] == "waiting" and s["wait_reason"] == "nav" and s["target"] == "A" and not s["skipped"]
+    clock.advance(3); r.tick()
+    assert len(nav.goals) == 1                           # 还没到重试时间
+    clock.advance(3); r.tick()
+    s = r.get(t["id"])
+    assert s["state"] == "running" and s["target"] == "A" and len(nav.goals) == 2

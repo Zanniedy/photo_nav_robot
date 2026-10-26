@@ -12,6 +12,10 @@ namespace lio_ekf {
  * predict:    yaw_rate (rad/s) 积分 yaw，协方差膨胀
  * update_lio: lio_odom 提供完整位姿观测 (px, py, yaw)
  * update_yaw: /robot/yaw 提供单独 yaw 观测，R 独立配置
+ *
+ * /robot/yaw 是 MCU 自己上电后积分的绝对 yaw，lio_odom 的 yaw 从 lio 启动时算起，两者参考系不同
+ * （只重启 lio、MCU 不断电时能差上百度）。初始化后第一帧 MCU yaw 记下偏差 yaw_off_ = x_yaw - mcu_yaw，
+ * 之后用 mcu_yaw + yaw_off_ 作观测；set_state 会重新对齐。
  */
 class LioEkf {
 public:
@@ -63,13 +67,18 @@ public:
 
     // ── update: /robot/yaw 单轴观测 ────────────────────────────────────────
     // H = [0, 0, 1]，只更新 yaw 分量
-    void update_yaw(double yaw) {
+    void update_yaw(double mcu_yaw) {
+        if (!yaw_ref_ok_) {             // 第一帧只对齐参考系，不更新
+            yaw_off_ = wrap(x_(2) - mcu_yaw);
+            yaw_ref_ok_ = true;
+            return;
+        }
         // 卡尔曼增益 k = P * H^T / (H * P * H^T + r)
         // H*P*H^T = P(2,2)，H*P = P 第 3 列
         double s = P_(2,2) + r_yaw_;
         Eigen::Vector3d k = P_.col(2) / s;
 
-        double innov = wrap(yaw - x_(2));
+        double innov = wrap(mcu_yaw + yaw_off_ - x_(2));
         x_ += k * innov;
         x_(2) = wrap(x_(2));
 
@@ -84,7 +93,11 @@ public:
 
     void set_state(double px, double py, double yaw) {
         x_ << px, py, yaw;
+        yaw_ref_ok_ = false;
     }
+
+    double yaw_offset() const { return yaw_off_; }
+    bool   yaw_aligned() const { return yaw_ref_ok_; }
 
 private:
     static double wrap(double a) {
@@ -95,6 +108,8 @@ private:
     Vec3   x_;
     Mat3   P_, Q_, R_lio_;
     double r_yaw_;
+    double yaw_off_{0.0};       // lio 参考系 yaw - MCU yaw
+    bool   yaw_ref_ok_{false};
 };
 
 /*

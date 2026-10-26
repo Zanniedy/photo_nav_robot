@@ -23,6 +23,7 @@ export const api = {
   login: (username, password) => req('POST', '/api/auth/login', { username, password }),
   logout: () => req('POST', '/api/auth/logout'),
   status: () => req('GET', '/api/status'),
+  taskLog: (since) => req('GET', `/api/tasklog?since=${since}`),
   maps: () => req('GET', '/api/maps'),
   diag: () => req('GET', '/api/diag'),
   procStart: (n) => req('POST', `/api/proc/${n}/start`),
@@ -60,4 +61,7 @@ export const api = {
   v1Status: () => req('GET', '/api/v1/status'),
   estop: () => req('POST', '/api/v1/estop'),
   estopRelease: () => req('POST', '/api/v1/estop/release'),
+  routes: () => req('GET', '/api/v1/routes'),
+  startPatrol: (route) => req('POST', '/api/v1/tasks', { type: 'patrol', route }),
+  cancelTask: (id) => req('POST', `/api/v1/tasks/${q(id)}/cancel`),
 }

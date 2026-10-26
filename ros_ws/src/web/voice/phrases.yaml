@@ -1,0 +1,14 @@
+# 固定话语：本机用 gen_voice.py 合成 <名字>_<语言>.wav，跟仓库一起 rsync 上机器人（机器人上不跑 piper）
+# 播哪种语言看 backend/config.yaml 的 voice.lang
+# 音色（~/max_robot/piper_voices/<name>.onnx）：
+#   zh_CN-chaowen-medium  男声，拼音音素（g2pW），CC0  ← 用这个
+#   zh_CN-xiao_ya-medium  女声，拼音音素，数据集只许非商用
+#   zh_CN-huayan-medium   espeak 音素，中文发音怪，别用
+# length_scale：> 1 变慢，1 = 原速
+voices:
+  zh: {name: zh_CN-chaowen-medium, length_scale: 1.25}
+  en: {name: en_US-lessac-medium, length_scale: 1.0}
+phrases:
+  greet:
+    zh: 你好，我是麦斯。你可以对我说：你好麦斯，开始对话。
+    en: Hello, I am Max. You can say, hello Max, to start a conversation with me.

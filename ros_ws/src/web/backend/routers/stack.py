@@ -3,7 +3,7 @@ import asyncio, json, math, shlex, threading, time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import maps, process_mgr, runtime, state
+import maps, patrol_file, process_mgr, runtime, state, tasklog
 from api_errors import STATUS
 from config import PROCESSES
 from task_runner import TaskError
@@ -138,6 +138,7 @@ def start_nav(m: dict) -> None:
     _ensure_base()
     process_mgr.start("nav", PROCESSES["nav"].replace("{map}", shlex.quote(m["id"])))
     set_current_map(m["id"])
+    patrol_file.sync(m["id"], log=lambda s: process_mgr.log("ui", s))   # 改了路线文件，重新进导航就生效
     _apply_saved_pose_async(m["id"])
 
 
@@ -331,6 +332,16 @@ def clear_map_pose(map: str):
     mid = _map_or_404(map)["id"]
     state.update(lambda d: d["poses"].pop(mid, None))
     return {"ok": True}
+
+
+@router.get("/tasklog")
+def task_log(since: int = 0):
+    """网页「任务」页签：当前任务 / 打招呼状态 + since 之后的任务日志"""
+    r, g, m = runtime.runner, runtime.greeter, runtime.mission
+    return {"current": r.current() if r is not None else None,
+            "greeter": g.status() if g is not None else None,
+            "mission": {**m.status(), "line": m.report()} if m is not None else None,
+            "lines": tasklog.since(since)}
 
 
 @router.get("/logs")

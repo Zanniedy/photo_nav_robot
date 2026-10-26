@@ -5,6 +5,7 @@
 - 相机远处检测不到人时，靠激光簇继续跟；但人在相机视野内且距离较近、相机却长时间没看到，就判定跟丢
   （防止轨迹漂到旁边的柱子上）
 - 锁定目标：开始时选离机器人最近的；目标丢了，再选当前离机器人最近的
+- 人脸：相机观测可以带「这一帧看到了脸」，记在 t_face；锁定时可以只选最近 face_within 秒内看到过脸的
 """
 import math
 
@@ -22,6 +23,7 @@ class Track:
         self.t = t              # 状态对应的时间
         self.t_cam = t          # 最近一次相机确认
         self.t_upd = t          # 最近一次任意更新
+        self.t_face = -math.inf  # 最近一次看到人脸
         self.cam_hits = 1
 
     @property
@@ -101,14 +103,19 @@ class Tracker:
             out.append((self.tracks[i], j))
         return out, [j for j in range(len(zs)) if j not in used_z]
 
-    def update_camera(self, t, zs):
-        """zs: 相机检测 + 激光测距得到的人位置列表"""
+    def update_camera(self, t, zs, faces=None):
+        """zs: 相机检测 + 激光测距得到的人位置列表；faces: 和 zs 对应，这个人这一帧有没有看到脸"""
         self._predict(t)
         matched, new = self._associate(zs, self.gate)
         for tr, j in matched:
             tr.update(zs[j], self.cam_std, t, from_camera=True)
+            if faces is not None and faces[j]:
+                tr.t_face = t
         for j in new:
-            self.tracks.append(Track(zs[j], t))
+            tr = Track(zs[j], t)
+            if faces is not None and faces[j]:
+                tr.t_face = t
+            self.tracks.append(tr)
 
     def update_lidar(self, t, centroids):
         """centroids: 宽度像人的激光簇质心。只更新已有轨迹，不新建"""
@@ -138,19 +145,20 @@ class Tracker:
     def get(self, tid):
         return next((tr for tr in self.tracks if tr.id == tid), None)
 
-    def nearest(self, robot_xy, t, cam_within=1.0):
-        """离机器人最近、且 cam_within 秒内被相机确认过的轨迹"""
-        cands = [tr for tr in self.tracks if t - tr.t_cam <= cam_within]
+    def nearest(self, robot_xy, t, cam_within=1.0, face_within=None):
+        """离机器人最近、且 cam_within 秒内被相机确认过的轨迹；face_within 不为 None 时还要这么多秒内看到过脸"""
+        cands = [tr for tr in self.tracks if t - tr.t_cam <= cam_within
+                 and (face_within is None or t - tr.t_face <= face_within)]
         if not cands:
             return None
         return min(cands, key=lambda tr: float(np.hypot(*(tr.xy - np.asarray(robot_xy)))))
 
-    def target(self, robot_xy, t):
-        """当前锁定的目标；没有或丢了就重新锁最近的。返回 (track, 是否刚换了目标)"""
+    def target(self, robot_xy, t, face_within=None):
+        """当前锁定的目标；没有或丢了就重新锁最近的（face_within 见 nearest）。返回 (track, 是否刚换了目标)"""
         tr = self.get(self.target_id) if self.target_id is not None else None
         if tr is not None:
             return tr, False
-        tr = self.nearest(robot_xy, t)
+        tr = self.nearest(robot_xy, t, face_within=face_within)
         changed = tr is not None
         self.target_id = tr.id if tr is not None else None
         return tr, changed

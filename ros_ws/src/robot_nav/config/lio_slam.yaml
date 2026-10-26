@@ -18,3 +18,9 @@ lio_slam_node:
     deskew:          true    # 扫描运动补偿
     deskew_reversed: true    # scan 下标大的点先采；装反了的表现是原地转时墙更糊，切 false 对比
     pred_min_speed:  0.05    # m/s，低于此不外推平移
+    # 动态点过滤（2026-10-26）：和 ~0.3s 前的帧比，移动快于 dyn_speed 的点（走动的人）不参与 ICP
+    dyn_enable:    true
+    dyn_speed:     0.5     # m/s
+    dyn_margin:    0.06    # m
+    dyn_ref_dt:    0.3     # s
+    dyn_max_ratio: 0.3     # 动态点超过这个比例说明运动预测错了，本帧不过滤

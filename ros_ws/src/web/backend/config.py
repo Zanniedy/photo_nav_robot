@@ -33,5 +33,11 @@ SESSION_HOURS: float = float(_auth.get("session_hours", 72))
 
 # 机器人身份（robot_id、name、api_tokens），每台一份，不进仓库，见 robot_config.py
 ROBOT_FILE: str = _x(_cfg.get("robot_file", "~/max_robot/robot.yaml"))
+# 巡逻路线参数文件（patrol_file.py），每台一份，不进仓库
+PATROL_FILE: str = _x(_cfg.get("patrol_file", "~/max_robot/patrol.yaml"))
 # 任务层参数（task_runner.RunnerConfig 的字段）
 TASKS: dict = dict(_cfg.get("tasks") or {})
+# 巡逻中看到人 → LED 打招呼（greeter.GreeterConfig 的字段）
+GREET: dict = dict(_cfg.get("greet") or {})
+# 固定话语播放（voice.VoiceConfig 的字段）
+VOICE: dict = dict(_cfg.get("voice") or {})

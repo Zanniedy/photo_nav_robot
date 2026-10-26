@@ -1,4 +1,5 @@
 #include "lio_math.hpp"
+#include "../common/dynamic_filter.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
@@ -45,6 +46,12 @@ public:
         declare_parameter("deskew",          true);
         declare_parameter("deskew_reversed", true);   // true：scan 下标大的点先采（sllidar 驱动反转了数组）
         declare_parameter("pred_min_speed",  0.05);   // m/s
+        // 动态点过滤（common/dynamic_filter.hpp）：和 ~0.3s 前的帧比，移动快于 dyn_speed 的点不参与 ICP、不进关键帧
+        declare_parameter("dyn_enable",    true);
+        declare_parameter("dyn_speed",     0.5);      // m/s
+        declare_parameter("dyn_margin",    0.06);     // m
+        declare_parameter("dyn_ref_dt",    0.3);      // s
+        declare_parameter("dyn_max_ratio", 0.3);
 
         scan_topic_   = get_parameter("scan_topic").as_string();
         pub_topic_    = get_parameter("pub_topic").as_string();
@@ -61,6 +68,15 @@ public:
         deskew_       = get_parameter("deskew").as_bool();
         deskew_rev_   = get_parameter("deskew_reversed").as_bool();
         pred_min_v_   = get_parameter("pred_min_speed").as_double();
+        {
+            dynfilter::Params dp;
+            dp.enable    = get_parameter("dyn_enable").as_bool();
+            dp.speed     = get_parameter("dyn_speed").as_double();
+            dp.margin    = get_parameter("dyn_margin").as_double();
+            dp.ref_dt    = get_parameter("dyn_ref_dt").as_double();
+            dp.max_ratio = get_parameter("dyn_max_ratio").as_double();
+            dyn_.set_params(dp);
+        }
 
         tf_buffer_   = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
@@ -129,14 +145,23 @@ private:
     {
         while (running_) {
             sensor_msgs::msg::LaserScan::SharedPtr scan;
+            size_t skipped = 0;
             {
                 std::unique_lock<std::mutex> lk(scan_mtx_will_process_);
                 scan_cv_.wait(lk, [this] {
                     return !scan_dequq_will_process_.empty() || !running_;
                 });
                 if (!running_) break;
-                scan = scan_dequq_will_process_.front();
-                scan_dequq_will_process_.pop_front();
+                // 只处理最新一帧：板子忙时按顺序处理会越积越多（10-26 实测 odom 落后 1~3s，
+                // map_localizer 拿旧 odom 匹配，内点率掉到 0.13）。跳帧没关系：和关键帧匹配，旋转有 IMU 预测
+                skipped = scan_dequq_will_process_.size() - 1;
+                scan = scan_dequq_will_process_.back();
+                scan_dequq_will_process_.clear();
+            }
+            if (skipped > 0) {
+                skipped_total_ += skipped;
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
+                    "处理不过来，跳过旧扫描 %zu 帧（累计 %zu）", skipped, skipped_total_);
             }
 
             if (!have_extrinsic_ && !lookup_extrinsic(scan->header.frame_id)) continue;
@@ -147,6 +172,7 @@ private:
 
             const double t_scan = rclcpp::Time(scan->header.stamp).seconds();
             if (!kf_scan_) {
+                drop_dynamic(scan, t_scan, make_pose(0.0, 0.0, 0.0));     // 只是喂历史
                 kf_scan_      = scan;
                 kf_points_    = matcher_.make_points(*scan, deskew_for(*scan, 0.0, 0.0, 0.0));
                 T_odom_kf_    = pose_;
@@ -174,7 +200,8 @@ private:
             const Eigen::Vector2d dp = v.norm() > pred_min_v_ ? Eigen::Vector2d(v * dt) : Eigen::Vector2d::Zero();
             const Pose2 pred_delta = make_pose(dp.x(), dp.y(), dyaw_pred);
             const double wz = dyaw_pred / dt;
-            const DP cur_points = matcher_.make_points(*scan, deskew_for(*scan, v.x(), v.y(), wz));
+            const auto scan_static = drop_dynamic(scan, t_scan, pred_delta);
+            const DP cur_points = matcher_.make_points(*scan_static, deskew_for(*scan_static, v.x(), v.y(), wz));
             const Pose2 T_pred        = pose_ * pred_delta;
             const Pose2 T_kf_base_ini = T_odom_kf_.inverse() * T_pred;
 
@@ -192,10 +219,9 @@ private:
                     const double scale = std::min(1.0 + rejects_, 2.0);
                     accepted = err.translation().norm() < max_trans_ * scale &&
                                std::abs(pose_yaw(err))  < max_rot_   * scale;
-                    if (!accepted) {
-                        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500,
-                            "ICP outlier rejected: err_t=%.3f err_yaw=%.3f (rejects=%d)",
-                            err.translation().norm(), pose_yaw(err), rejects_ + 1);
+                    if (!accepted && rejects_ == 0) {      // 只打一串被拒的第一帧，结束时再打一行汇总
+                        RCLCPP_WARN(get_logger(), "ICP 开始被拒: err_t=%.3f err_yaw=%.3f pose=(%.2f, %.2f)",
+                            err.translation().norm(), pose_yaw(err), pose_.translation().x(), pose_.translation().y());
                     }
                 } else {
                     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "ICP: too few points");
@@ -206,6 +232,8 @@ private:
 
             pose_valid_ = accepted;
             if (accepted) {
+                if (rejects_ > 0)
+                    RCLCPP_WARN(get_logger(), "ICP 恢复：之前连续被拒 %d 帧", rejects_);
                 const Pose2 new_pose = T_odom_kf_ * T_kf_base;
                 last_delta_ = pose_.inverse() * new_pose;
                 pose_       = new_pose;
@@ -220,7 +248,7 @@ private:
                     kf_points_ = cur_points;
                     T_odom_kf_ = pose_;
                 }
-                RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
                     "ICP ok: pose x=%.3f y=%.3f yaw=%.3f",
                     pose_.translation().x(), pose_.translation().y(), pose_yaw(pose_));
             } else {
@@ -242,6 +270,31 @@ private:
             }
             enqueue_odom(scan->header.stamp);
         }
+    }
+
+    // 动态点的 range 置成 +inf（make_points 按 r > range_max 跳过；NaN 比较都是 false，会漏过去）。delta：本帧相对上一帧的车体运动（预测值）
+    sensor_msgs::msg::LaserScan::SharedPtr drop_dynamic(const sensor_msgs::msg::LaserScan::SharedPtr & scan,
+                                                       double t, const Pose2 & delta)
+    {
+        std::vector<Eigen::Vector2d> pts;
+        std::vector<int> idx;
+        pts.reserve(scan->ranges.size());
+        for (size_t i = 0; i < scan->ranges.size(); ++i) {
+            const float r = scan->ranges[i];
+            if (!(std::isfinite(r) && r > scan->range_min && r < scan->range_max)) continue;
+            const double a = scan->angle_min + i * scan->angle_increment;
+            pts.push_back(T_bl_ * Eigen::Vector2d(r * std::cos(a), r * std::sin(a)));
+            idx.push_back(static_cast<int>(i));
+        }
+        dynfilter::Stats st;
+        const auto dyn = dyn_.update(pts, t, delta, &st);
+        if (!st.applied || st.dynamic == 0) return scan;
+        auto out = std::make_shared<sensor_msgs::msg::LaserScan>(*scan);
+        for (size_t k = 0; k < dyn.size(); ++k)
+            if (dyn[k]) out->ranges[idx[k]] = std::numeric_limits<float>::infinity();
+        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000, "dynamic points dropped: %d/%d",
+                             st.dynamic, st.total);
+        return out;
     }
 
     Deskew deskew_for(const sensor_msgs::msg::LaserScan & scan, double vx, double vy, double wz) const {
@@ -387,6 +440,8 @@ private:
 
     // ICP
     scan_match matcher_;
+    dynfilter::DynamicFilter dyn_;                 // 仅 proc_thread_
+    size_t skipped_total_{0};                      // 仅 proc_thread_
 
     // 关键帧与位姿（仅 proc_thread_ 读写，无需额外锁）
     sensor_msgs::msg::LaserScan::SharedPtr kf_scan_;

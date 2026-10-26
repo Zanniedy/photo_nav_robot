@@ -1,30 +1,220 @@
-# 交接文档（2026-10-23 晚更新）
+# 交接文档（2026-10-26 更新）
 
 平面移动机器人：2D 激光（思岚 C1）+ 底盘 MCU（串口上报 yaw），无轮速计。
 链路：`robot_bridge` → `lio_slam_node`（帧间 ICP）→ `lio_ekf_node` → slam_toolbox 建图 / map_localizer + Nav2（MPPI）导航，外加网页控制台 **MAX_NAV_ROBOT**（`ros_ws/src/web`）。
 
 - git 根：`/home/lsy/cs_project/robot`，远端 `github.com/Zanniedy/photo_nav_robot`（main）
-- 实机：`sunrise@192.168.10.42`（有线）/ `192.168.1.124`（Wi-Fi），ARM64，代码在 `~/max_robot/ros_ws`，地图在 `~/max_robot/maps`
-- 同步：`bash rsync.sh`（本机执行）；远端编译：`bash make_remote.sh [--packages-select ...]`（机器人上执行）
+- 实机：**现在统一走有线** `sunrise@192.168.10.42`（本机有线口 192.168.10.88）。无线备用：手机热点「罗莳远」（DHCP，10-26 是 10.43.231.227，会变），用 `ROBOT=sunrise@<ip> bash rsync.sh`；以后打算走公网转发。ARM64，代码在 `~/max_robot/ros_ws`，地图在 `~/max_robot/maps`
+- 同步：`bash rsync.sh`（本机执行）；远端编译：`bash make_remote.sh [--packages-select ...]`（机器人上执行）。**编译、重启后端都用 `setsid nohup ... &` 在机器人上后台跑**，10-26 网线松了一次，ssh 断开时前台命令跟着中断
 
-## 一览（10-23 晚）
+## 一览（10-26）
 
 | 模块 | 状态 | 提交 |
 |---|---|---|
 | 底盘控制闭环、速度估计、lio 去畸变、Nav2 调参、网页速度曲线等 | 已上机器人，大部分没实车验证 | `745b9f1` |
-| BPU 检测模型 v2（真实照片校准，调试用） | 已上板，能用但慢（117ms/帧） | 模型文件不在 git 里 |
-| 人员跟踪 + 走到人面前（`person_tracker`、`/person/approach`） | 已上机器人，节点能稳定跑，**没在有人的场景实测** | `ce97711`、`615cdad` |
-| 本地 `/api/v1` + 任务层（goto/guide/patrol、巡航等待、软件急停、robot_id、token） | 本机后端单测 88 个全过；**还没 rsync 到机器人，没编译、没实测** | `7c3d95b`..`c129d4b` |
-| 云（ECS + 自建 EMQX + `cloud_agent`） | 有 ECS，本机能 ping 通、22 端口通；还没登录过 ECS，EMQX 没装，代码没写 | — |
+| **EKF yaw 参考系修复**（`lio_ekf.hpp`） | 本机 gtest 3 个过；已上机器人，静止 yaw 波动 2.3°→0.01°；**导航没复测** | 未提交 |
+| BPU 检测模型 v2（真实照片校准，调试用） | 已上板，能用但慢（117~180ms/帧） | 模型文件不在 git 里 |
+| 人员跟踪 + 走到人面前（`person_tracker`、`/person/approach`） | 已上机器人，10-26 晚改为开机自启，**没在有人的场景实测** | `ce97711`、`615cdad` |
+| 相机-雷达外参标定（只标 yaw，`extcal.py` + 网页） | 已上机器人，**没实测** | 未提交 |
+| 人脸检测 YuNet（`face.py`）+ `require_face` + 网页预览叠检测框 + 网页里启停 person | 已上机器人；122 张实拍照片测过（41 张脸，框都对），**没在线实测** | 未提交 |
+| 本地 `/api/v1` + 任务层（goto/guide/patrol、巡航等待、急停、token） | 已上机器人（10-26 随后端一起），后端单测 94 个全过，**巡逻没实测** | `7c3d95b`..`c129d4b` + 未提交 |
+| 巡逻遇人状态机 `greeter.py`（idle→search→greet）+ 网页「任务」页签 | 已上机器人，单测过，**没实测** | 未提交 |
+| 蓝牙 LED `led_display`（+ 眼睛动画、`/led/eyes`、`idle: eyes`） | 机器人蓝牙已打通（rfkill 解除、bleak 3.0.2、字体），机器人直连屏发文字/眼睛都测过；`led` 进程没在后端里实际起过 | 未提交 |
+| 语音播报 piper TTS（预合成 wav，`voice.py`，greet 时和 LED 一起播） | 本机 USB 声卡（HECATE G1200）播放测过，后端单测 98 个全过；**没同步机器人，机器人上还没插 USB 声卡** | 未提交 |
+| 亚博 Speech_Lib 离线命令词模块 | 不用于播报；以后可能用来听「你好 Max」唤醒词 | — |
+| 云（ECS + EMQX + `cloud_agent`） | 没动 | — |
+
+需求（10-25 飞书「Max_robot」）：STAGE1 巡航识别到人脸后固定语音播报；STAGE2 识别到人脸后通过蓝牙把文字发到 LED 软屏；STAGE3 识别到人脸后发信号给 AI 端交互。10-26 用户细化：**巡逻中看到人脸 → 进入搜索（走向人）→ 距离 ≤2m（靠激光+跟踪，近处人脸拍不全）→ LED 显示 `hello i am max` → 回到眼睛、继续巡逻**；语音先只留接口。分支 `stage1-voice` / `stage2-led` / `stage3-ai` 都还是空的，10-26 的改动全在工作区没提交（当前分支 `stage1-voice`）。
 
 接下来按顺序：
-1. 10-23 的 `/api/v1` 上机器人：rsync、编译 `robot_bridge`、重启后端、配 `robot.yaml`，按 10-23 第一节「上机验证」逐项测
-2. 云连通：登录 ECS、装 EMQX、机器人和 ECS 互发 MQTT 消息（见 10-23 第二节）
-3. 实测人员跟随：网页状态页启动 `person`，控制页「人员跟随」点开始（详见 10-22 第二节「实测步骤」）
-4. 跑 v3 模型转换（Softmax 放到 BPU），目标把单帧压到 50ms 以内
-5. 到实际工作环境拍照，重新校准出正式版模型
-6. 重标相机内参（fx=2770 可疑），标定相机和雷达的相对 yaw
-7. 网页的路线编辑和巡航控制界面（`/api/v1/routes` 已有，界面没做）
+1. **导航复测**：EKF 已修好（静止不再抖），网页开导航、给初始位姿，看定位和导航
+1. **定位丢失恢复实测**：导航中把机器人抱走/盖住雷达 → 「任务」页签看 丢失 → 恢复 → 巡逻；看后端日志 `外扩搜索：...耗时` 和误报；有人走过时看 `dynamic points dropped`
+2. 外参标定：网页「人员跟随 → 相机-雷达外参」（10-26 第二节）；fx 粗估差得多就先重标内参
+3. 实测人脸：相机窗口「启动检测」，看框
+4. 实测巡逻遇人：状态页起 `led`、`nav`、`person`，开一条巡逻路线，「任务」页签看状态（10-26 第三节）
+5. `camera_node` 占满一个核（94%，读帧线程），rosbridge 也 95%：可以降相机帧率 / 只按需发布；网页 `/tf` 订阅没节流
+6. 跑 v3 模型转换（Softmax 放 BPU），目标 50ms/帧；到实际环境拍照重新校准正式版模型
+7. 网页路线编辑界面（一键巡逻按钮 10-26 晚已做；路线现在靠 `~/max_robot/patrol.yaml`）
+8. 提交：问用户分到哪个 stage 分支
+
+## 2026-10-26 晚：巡逻遇人实测 1 —— 看到人后不走过去、反而开走
+
+- 现象（21:50 第一次实测，人在 2.3m）：任务日志 `[搜索] 看到人脸 2.3m，走过去` → 3s 后 `[空闲] 目标丢了` → 巡逻继续去「客厅」，用户感觉在远离。1s 后又 `暂停（定位丢失）`
+- 原因：person 日志里只有 `approach 已取消`，没有 `锁定 #..`，也没发导航目标。`/person/approach` 刚开始时 person_tracker 还在 searching（要在 `face_within` 1.5s 内再看到这张脸才锁定，检测只有 2.3Hz、257ms/帧），`/person/state` 里还没有 `target`；greeter 把「还没锁定」也算成「目标丢了」，3s（`lost_timeout`）就取消 approach、恢复巡逻。机器人那 3s 只是停下，之后的移动是巡逻往下一个点开
+- 修复（`greeter.py`）：锁定过目标以后才按 `lost_timeout` 判丢；锁定前等 person_tracker 自己的 `search_timeout`（5s，失败时 approach 返回 failed），再加 `greet.lock_timeout`（8s）兜底。单测 2 个（共 109 个全过）
+- **没解决**：如果 5s 内一直没再看到脸（人转身、检测太慢），还是会放弃继续巡逻；可以把 `person_tracker.yaml` 的 `face_within` 调到 3s。定位丢失是另一个问题，没查
+
+## 2026-10-26 晚：person / led 开机自启 + 自检
+
+- `config.yaml` 的 `autostart` 加了 `led`、`person`（之前要在状态页手动起）。person 常驻约占 1 个核
+- 状态页「自检」新增：
+  - USB 声卡：`serial_devices.speaker` = `/dev/snd/by-id/usb-_HECATE_G1200-00`（权限不够提示加 audio 组）
+  - 人脸检测：模型文件（`person_tracker.yaml` 的 `model_path` + `_outputs.json`、`face_model`）→ 进程在跑 → 1s 内有 `/person/state` → `face_model` 已加载 → `det.hz` ≥ 0.5，显示检测频率和耗时
+  - LED 屏：有蓝牙适配器 → 没被 rfkill 屏蔽 → 进程在跑 → `/led/state` `connected`；连不上时显示 led_node 报的错
+- `ros_link` 多订阅 `/led/state`（transient local），加 `person_info()`、`led_state()`；单测 `tests/test_diag.py` 2 个，后端共 107 个全过
+
+## 2026-10-26 晚：巡逻路线参数文件
+
+- `~/max_robot/patrol.yaml`（`config.yaml` 的 `patrol_file`，每台一份，不进仓库）按**点位名**写路线：`maps: {<地图名>: {routes: [{name, points, loop}]}}`，示例 `backend/patrol.example.yaml`
+- `backend/patrol_file.py`：后端启动时同步所有地图，`stack.start_nav`（起导航 / 切地图）时再同步那张，所以改了文件重新进导航就生效。同名路线以文件为准，网页 / API 建的其他路线不动，文件里删掉的路线不会删。点名找不到、地图不存在只写日志（「巡逻路线 ... 没生成」）
+- **只生成路线，不自动开始巡逻**（用户选的）：`POST /api/v1/tasks {"type": "patrol", "route": "家里一圈"}`
+- 网页「任务」页签顶上「巡逻」一行：选路线（当前导航地图的，记住上次选的）→「一键巡逻」；巡逻中换成「停止巡逻」（cancel 巡逻任务）。没开导航显示「先开导航」，地图没路线提示去写 patrol.yaml。**没在浏览器里实际点过**
+- 机器人上已放一份：`map_20261014_181452` 的「家里一圈」= 客厅 → 厨房 → 卧室 → 家，循环。只有这张图有点位；`map_20261022_181620`（10-26 用来导航的）一个点都没有，要先在网页上标点再写进文件
+- 单测 `tests/test_patrol_file.py` 3 个，后端共 101 个全过
+
+## 2026-10-26 晚：piper TTS 固定话语
+
+- 需求：打招呼时用 USB 声卡说一句固定的话，中英两种模式。中文「你好，我是麦斯。你可以对我说：你好麦斯，开始对话。」（7.7s），英文 "Hello, I am Max. You can say, hello Max, to start a conversation with me."
+- **机器人上不跑 piper**（板子负载已经 11~12）：本机预先合成 wav，跟仓库一起 rsync
+  - `web/voice/phrases.yaml`：话语和音色；`web/voice/gen_voice.py` 合成 `<名字>_<语言>.wav`（现在是 `greet_zh.wav` / `greet_en.wav`，已进仓库）；`length_scale` 调语速（>1 变慢），现在中文 1.25、英文 1.0。**用户最后定了用英文原速**（`voice.lang: en`），中文 chaowen / xiao_ya 都试听过，没选
+  - 本机环境：仓库根 `.venv_piper`（piper-tts 1.8.0 + pyyaml、unicode-rbnf、sentence-stream、transformers，已加进 .gitignore）；音色在 `~/max_robot/piper_voices/`（hf-mirror 下载）。改话语：改 phrases.yaml → `.venv_piper/bin/python ros_ws/src/web/voice/gen_voice.py --play` → rsync
+  - 中文用 `zh_CN-chaowen-medium`（男声，CC0）。**huayan 走 espeak 音素，中文发音很怪，用户否了**；xiao_ya（女声）数据集只许非商用
+  - chaowen / xiao_ya 是拼音音素，要 g2pW：`g2pw.tar.gz`（hf-mirror 的 piper-checkpoints 数据集）解压到 `piper_voices/g2pW/`，再从 `g2pW==0.1.1` 的 wheel 里取 `bopomofo_to_pinyin_wo_tune_dict.json`、`char_bopomofo_dict.json`、`bert-base-chinese_s2t_dict.txt` 放进同一目录（不装这个包，它依赖 torch）。分词器 bert-base-chinese 第一次从 hf-mirror 下到 `~/.cache/huggingface`
+  - 坑：本机 `ALL_PROXY=socks://...` 会让 transformers 下载报 `Unknown scheme for proxy URL`，脚本里已去掉；报 `wave.Error: # channels not specified` 是合成前就出错了，往上翻真正的异常
+- 后端 `voice.py`：起一个播放子进程，不等结束，上一句没播完先停掉；默认 `paplay`（PulseAudio），`device` 填 sink 名，也可以换成 `aplay -q` + `plughw:CARD=...`。没有 `XDG_RUNTIME_DIR`（setsid nohup 从 ssh 起的后端）时补 `/run/user/<uid>`
+- `config.yaml`：`voice:`（`enabled`、`lang: zh|en`（现在 en）、`player`、`device`）；`greet.voice: greet`（进 greet 时播 `greet_<lang>.wav`，`""` = 不播）
+- 试播：`cd ros_ws/src/web/backend && python3 voice.py greet en`
+- 单测 `tests/test_voice.py` 3 个 + `test_greeter.py` 加 1 个
+- 机器人上：USB 声卡已插（`/dev/snd/by-id/usb-_HECATE_G1200-00`，ALSA card 1 `G1200`），`voice.device` 按 by-id 绑定 sink `alsa_output.usb-_HECATE_G1200-00.analog-stereo`；声卡拔了 paplay 会失败，后端日志有「语音播放退出码」
+
+## 2026-10-26 晚：动态点过滤、定位丢失后外扩重定位、任务总状态机
+
+### 动态点过滤 `robot_nav/src/common/dynamic_filter.hpp`
+
+- 和约 0.3s 前的一帧比（相邻两帧只隔 0.1s，人顺着身体方向走时两帧点还重叠，看不出动）：历史帧按里程计增量链变换到当前车体系，当前点到历史帧最近点距离 > `speed·dt + margin` 就算动态，再沿扫描顺序扩张到同一物体（相邻 < 0.12m）
+- 动态点 > `max_ratio`(30%) 说明运动预测错了，本帧不过滤；刚露出来的背景只会被丢 ~0.3s
+- 用在两处：`lio_slam_node`（ICP 前把动态点 range 置 +inf，**不能用 NaN**：`scan_to_dp` 只判 `r<min||r>max`，NaN 会漏过去；关键帧也不含动态点）和 `map_localizer_node`（匹配和评分前去掉）
+- 参数（两个节点同名）：`dyn_enable` `dyn_speed`(0.5m/s) `dyn_margin`(0.06m) `dyn_ref_dt`(0.3s) `dyn_max_ratio`(0.3)。lio 在 `config/lio_slam.yaml`，localizer 没有 yaml，默认值在代码里
+- lio 日志每 3s 打一次 `dynamic points dropped: n/total`；localizer 的动态比例在 `/localizer/state` 的 `dynamic`
+
+### 定位丢失 → 外扩重定位 `map_localizer`
+
+- 状态机（`/localizer/state`，String JSON 2Hz：`state` `score` `rejects` `dynamic` `recover{score,radius,confirming}` `why`）：
+  - `tracking` ──连续 `lost_after_rejects`(20 帧≈2s) 被拒──▶ `lost` ──（`auto_recover`）──▶ `recovering`
+  - `recovering`：每帧先按预测做普通匹配，内点率 ≥ `recover_score`(0.6) 直接回 `tracking`（短暂遮挡）；否则每 `recover_interval`(1s) 做一次**从最后可信位姿开始一圈圈往外扩**的搜索（`global_search.hpp`，半径 0.5/1/2/4/8/16/40m，每圈位置步长 0.15m × 360° yaw 步长 5°，粗评分 top 8 再 GN 精配；某一圈内点率 ≥ 0.6 就停，不再外扩）。**连续两次搜到的位姿一致**（0.3m / 10°）才采用 → `tracking`
+  - 收到 `/initialpose` 任何状态都回 `tracking`；服务 `/localizer/relocalize`（Trigger）手动进 `recovering`
+  - 候选位置只取地图已知空闲格、离墙 ≥0.15m
+- 实测正常跟踪的内点率 0.51~0.58（10-26，score 门限 `min_inlier_ratio` 0.5），所以恢复门限定 0.6；**真实地图上的搜索耗时、误报率没测**，单测在合成 10x8m 房间：近处第 1 圈 5ms，3m 外 60ms，乱点不误报
+- 单测 `test/test_global_search.cpp`（搜索 3 个 + 动态过滤 3 个）
+
+### 任务总状态机 `web/backend/mission.py`
+
+- 状态：空闲 / 巡逻 / 丢失 / 恢复 / 人脸（greeter search，走向人）/ 等待（greeter greet，屏显示 hello）/ 暂停（其他原因的 waiting）
+- 定位 `lost`/`recovering` → 取消遇人、`pause_patrol("lost")`（导航停下）；回到 `tracking` → `resume_patrol()`。`task_runner` 里 `wait_reason=lost` 不走 `wait_timeout` 自动继续
+- greeter 现在由 mission 驱动：定位丢失/恢复中不 tick
+- **每 3s 打一行当前状态**：后端输出 `[状态机] ...`（`/tmp/max_ui.log`）+ 网页「任务」页签单独一栏「状态机（每 3s）」，不混进事件日志；状态变化（`状态机 巡逻 → 丢失` 等）进任务日志
+- 例：`[巡逻 12s] | 巡逻 running 2/5 → 门口 | 定位 tracking 0.55 动态 3% | 遇人 空闲`
+- 单测 `tests/test_mission.py` 4 个，后端共 105 个全过
+
+## 2026-10-26：EKF 修复、外参标定、人脸、LED 巡逻打招呼、任务日志
+
+### 一、定位「静止都会飞」：EKF 融合了两个参考系不同的 yaw
+
+- 现象：机器人静止，网页上位姿来回抖。探针实测（10s，1Hz）：`/lio_odom` yaw 稳在 16.9°，`/robot/yaw`（MCU）稳在 -86.7°，`/lio_ekf_odom` yaw 却在 -80.3 ~ -82.6° 之间跳，map→base yaw 跟着 ±1°
+- 原因：`lio_ekf.hpp` 的 `update_yaw` 把 MCU 绝对 yaw 直接当观测，`update_lio` 又用 lio 自己参考系的 yaw，两者差 104°（lio 重启过、MCU 没断电就会这样）。100Hz 的 MCU 观测和 10Hz 的 lio 观测轮流把 yaw 往两边拉
+- 修复：初始化（`set_state`）后第一帧 MCU yaw 只记偏差 `yaw_off = x_yaw - mcu_yaw`，之后用 `mcu_yaw + yaw_off` 当观测；节点日志打一行 `/robot/yaw aligned to lio frame: offset ... deg`
+- 单测 `robot_nav/test/test_lio_ekf.cpp`（3 个：静止 104° 偏差不跳、对齐后跟随 MCU 转动、跨 ±180°），本机过；`test_velocity_kf` 也过
+- **已上机器人并复测**（10-26 20:55）：编译、重启后端（base 跟着重启）后静止 12s，`/lio_ekf_odom` yaw 波动 0.01°（修复前 2.3°），位置抖动约 1cm。重启后要重新开导航、给初始位姿
+- 当时板子 load 11~12（8 核）：`lio_slam` 163%、`person_tracker` 110%、`camera_node` 95%、rosbridge 95%。`/scan` 10Hz、`/lio_odom` 16Hz、`/lio_ekf_odom` 23Hz 都正常，不是掉帧
+
+### 二、相机-雷达外参标定（只标相机 yaw）
+
+- `person_locator/extcal.py`：每帧画面里只有一个人时，记 (框中心 u, 相机算的方位 θc, 激光里那个人的方位 θl)，都在 base_link 下。修正量 = median(θl−θc)，3×MAD 外剔除；人左右覆盖 ≥20° 时再用针孔模型 `u−cx = fx·tan(ψ−θl)` 粗估 fx，和当前内参差 25% 以上就提示重标内参。单测 `test/test_extcal.py` 7 个
+- 节点：`/person/extcal_start`、`/person/extcal_solve`、`/person/extcal_save`（std_srvs/Trigger）；结果写 `~/max_robot/calib/camera_extrinsic.yaml`，**`robot.launch.py` 启动时读里面的 yaw** 放进 `base_link→camera_link`（文件没有或坏了就当 0）。保存后要重启 base
+- 网页「人员跟随」下面「相机-雷达外参」：开始采集 / 停止并计算 / 保存，显示样本数、跳过原因、方位覆盖直方图、yaw、残差、fx 粗估
+- 用法：机器人不动，画面里只站一个人，1~5m 处左右慢慢走到覆盖格基本变绿。不需要开导航（采样走 base_link，不经过 map）
+
+### 三、人脸检测 + 巡逻遇人打招呼
+
+- `person_locator/face.py`：OpenCV `FaceDetectorYN`（YuNet `face_detection_yunet_2023mar.onnx`，要 OpenCV ≥4.8，机器人是 4.11；本机系统 Python 的 4.5.4 跑不了）。**只在人体框上半部分里找**：整张 640x360 要 80~90ms，裁剪后约 17ms。模型在机器人 `~/max_robot/models/`，不在 git 里（opencv_zoo 下载，sha256 `8f2383e4...52fa4`）
+- `person_tracker`：参数 `face_model`、`face_conf`、`require_face`（默认 true，approach 只锁最近 `face_within`=1.5s 内看到过脸的人）。`/person/state` 加了 `boxes`（归一化的人体框/人脸框，1s 内的）、轨迹的 `face_age`、`det.faces`/`face_ms`。检测统计挪到 map TF 之前，没开导航也能看到检测在跑
+- 到达人面前时发 `/person/arrived`（String JSON），给语音用
+- 网页：相机窗口预览叠检测框（绿=人、红=正脸、黄=侧脸），旁边「启动检测/停止检测」直接起停 `person` 进程（不在 autostart，用户要求先当调试选项）；「人员跟随」面板标题旁也有同样按钮
+- 后端 `greeter.py`（巡逻遇人状态机，`config.yaml` 的 `greet:`）：
+  - idle：巡逻中看到人脸且 ≤ `detect_distance`(5m) → search：暂停巡逻、发 `/person/approach`（停在 `approach_distance` 1.5m），屏不变
+  - search：跟踪距离 ≤ `greet_distance`(2m) → greet（**这一段不要求看到脸**，近处人脸拍不全，用激光+跟踪的锁定目标距离）；目标丢 3s / approach 结束还没进 2m / 40s 超时 → 回 idle 继续巡逻
+  - greet：LED 显示 `text`（`hello i am max`），`hold` 8s 后屏换回眼睛、取消 approach、恢复巡逻；之后 `cooldown` 20s 不再触发；中途用户取消巡逻也会收尾
+  - `ros_link.py` 加了 `/person/approach` action 客户端、`/led/text`、`/led/eyes` 发布；`task_runner` 加 `pause_patrol` / `resume_patrol`
+- 网页新页签「任务」（`TaskLogPanel.vue`，接口 `GET /api/tasklog?since=`）：上面是当前巡逻/前台任务和遇人状态机，下面是只记任务逻辑的日志（`tasklog.py`，巡逻开始/暂停/继续/完成、搜索、打招呼、放弃原因、急停），不会被 ROS 节点输出刷掉
+- 实测步骤：状态页起 `led`、`nav`、`person` → 开一条巡逻路线 → 人站在路线附近 → 「任务」页签应依次出现 搜索 → 打招呼 → 空闲（继续巡逻），屏 眼睛 → hello i am max → 眼睛
+
+### 四、LED
+
+- `ledctl.eyes_gif()`：32x16 蓝色双眼，眨眼、左右看，循环（约 10KB）；`led_cli eyes [--color r,g,b]`
+- `led_node`：新话题 `/led/eyes`（Empty）；参数 `idle: eyes`（连上屏先显示眼睛；改成 `""` 就不管屏上原来的内容）、`eyes_color`
+- 后端进程列表加了 `led`（不在 autostart）
+- 机器人上第一次用要做的都做了：`sudo rfkill unblock bluetooth` + `bluetoothctl power on`（**重启后又被软屏蔽过一次没确认，10-26 重启后看是 unblocked**）、`pip3 install --user bleak==3.0.2`、`~/max_robot/fonts/cusong16.ttf`
+- 坑：本机 10-25 调试留下的 `led_node` 一直占着屏，机器人报 `Device ... was not found`；屏同一时间只能连一台
+
+### 五、网页其他
+
+- 去掉了地图上的「轨迹」图层（前端每帧往数组里存位姿，最多 5000 个点，用户嫌乱、开销大）；`rviz.launch.py` / `rviz_sim.launch.py` 去掉了 `odom_path_node`（累积 `/lio_odom_path`、`/lio_ekf_path`）
+- Nav2 的 `/plan`、`/local_plan` 还在显示（不累积）
+
+### 六、网络
+
+- 机器人无线：热点「罗莳远」优先级 20（DHCP）；TP-LINK_BF09(_5G) 自动获取、优先级 0。热点配置里原来多挂了个 `192.168.10.33/24`，和有线同网段会把有线搞断，已删
+- 本机 `rsync.sh` / `fetch_arm64_deps.sh` 默认 `ROBOT` = 有线 192.168.10.42
+- 10-26 下午机器人断电重启过一次（有线 ARP 不回、扫段只有本机），之后恢复
+
+### 七、其他发现
+
+- 语音模块（亚博 Speech_Lib，CH340 串口 `1a86:7522`）是离线固定命令词：`speech_read()` 只返回命令词 ID，`void_write(id)` 只能播芯片里预存的第 id 条音频；改词条要去厂家平台重新生成固件烧录。`ROS2源码.zip`（项目根，未进 git）是亚博 X3/R2 小车的工作空间，只有调用代码，没有 Speech_Lib 本身。用户说语音具体待定
+- `rviz.launch.py` 里 laser TF 没有 yaw 90°，和 `robot.launch.py` 不一致，两个同时跑会冲突（没改）
+- 机器人上 `pytest` 坏了（`_pytest.scope` 缺失），板上只能做 import 检查
+
+## 2026-10-25：蓝牙 LED 软屏 `led_display`
+
+屏：16×32 全彩点阵软屏，蓝牙名 `LED 16*32-D932FE-L`，地址 `7D:39:31:D9:32:FE`，官方 App「LEDCanvas」（安卓包名 `com.led.ledcanvas`，主板是杰理蓝牙芯片）。网上没有公开协议，**协议是反编译 LEDCanvas v1.6.3 安卓包（jadx）得到的**，关键代码在 App 的 `com.led.ledcanvas.ble.{BleManager,BleSendManager,ImageAgreement}`。
+
+### 协议
+
+- BLE，不用配对、不用密码。**同一时间只能连一台**，手机 App 连着时电脑/机器人连不上
+- 服务 `C820`：`C821` 写命令、`C822` 写大块数据（write without response）、`C823` notify 回复
+- 服务 `AE00`（`AE01`/`AE02`）是杰理 OTA，刷固件用，**代码里不碰，别往里写**
+- 每条命令 = 负载 + CRC16/MODBUS（初值 0xFFFF、多项式 0xA001），**CRC 大端**。例：亮度 30 = `00 01 01 1e 7c d0`
+- 常用命令（负载，不含 CRC）：亮度 `00 01 01 <1..100>`；开关屏 `00 03 00 01 <0/1>`（加 CRC 后补 0 到 16 字节）；速度 `00 02 00 01 <v>`（同样补到 16 字节）；旋转 `51 01 01 <0/1>`；时钟 `0e 01 0a <样式> <24h> <显示日期> <年 u16> <月-1> <日-1> <时> <分> <秒>`。App 里还有 `50 01 01 01`（重置）、`52 ...`（设密码），**没测、库里没做，别乱发**
+- 图片、动画、文字都是**直接发 32×16 的 GIF 文件**，屏自己解码（App 自带素材就是 32×16 GIF）：
+  1. `C821` 发 `08 02 05 <slot> <GIF 的 CRC32C u32 大端>`，slot 0 = 立即显示
+  2. 屏回 `08 02 xx 01` = 开始传；`xx xx xx 03` = 屏上已经是这张，不用传
+  3. `C822` 逐包发：`01 08 02 | 总长 u32 | 序号 u16 | 本包长 u16 | 数据 | CRC16`，**每包等屏回 `01 01 .. .. .. 01` 再发下一包**
+  4. 最后一包确认后 `C821` 发 `01 02 01 01`，屏回 `01 02 01 01` 成功；第 4 字节 >1 是校验错误
+- 每包数据长度 = ATT MTU − 26（和 App 一致）。BlueZ 协商到 517，每包 491 字节，34KB 的 GIF 71 包、几秒发完。**bleak 在 BlueZ 上不先 `_acquire_mtu()` 会一直报 MTU=23**，每包只剩 7 字节，库里已处理
+
+### 代码 `ros_ws/src/led_display`（ament_python）
+
+- `led_display/ledctl.py`：协议库，**不依赖 ROS**，`LedPanel` 异步类（`brightness`、`power`、`speed`、`rotate`、`clock`、`send_gif`、`show_image`、`show_text`）；`prepare_gif` 把任意图片/GIF 转成 32×16（`contain` 留黑边 / `cover` 裁剪铺满 / `stretch`），`text_gif` 文字渲染成 GIF，宽于 32 像素就从右往左滚动
+- `led_display/cli.py`：`ros2 run led_display led_cli text "你好" --color 0,255,0`、`brightness 50`、`gif <文件> --fit cover`、`power off`、`clock`；`-v` 打印收发字节
+- `led_display/led_node.py`：常驻节点，保持长连接、断了 5s 重连
+  - 订阅 `/led/text`（String，纯文字或 JSON `{"text": "...", "color": [r,g,b]}`）、`/led/gif`（String，机器人上的文件路径）、`/led/brightness`（UInt8）、`/led/power`（Bool）
+  - 发布 `/led/state`（String JSON `{connected, showing, error}`，transient local）
+  - 上传一张要 1~3s，期间来多条只发最新的
+  - 参数 `config/led.yaml`：`address`、`font_path`、`color`、`brightness`、`reconnect_interval`、`verbose`
+- 给巡航用（STAGE2）：识别到人后 `ros2 topic pub --once /led/text std_msgs/msg/String "{data: '欢迎光临'}"`，或者节点里发同样的消息
+- 字体：`cusong16.ttf` 是 LEDCanvas 安装包里的 16 点阵宋体，16 像素高最清楚。**有版权、仓库是公开的，没放进 git**；放到 `~/max_robot/fonts/cusong16.ttf`（本机已放）。找不到时按顺序退回 wqy-microhei / Noto Sans CJK / DroidSansFallback，都没有就报错。从安装包取：`unzip -j LEDCanvas-*.apk assets/fonts/cusong16.ttf -d ~/max_robot/fonts/`
+- 依赖：`python3-pil`（apt）、`bleak`（pip，本机系统 Python 装的是 `pip3 install --user bleak==3.0.2`）
+
+### 测试
+
+- 单测 7 个（CRC、命令字节、分包、GIF 尺寸、文字滚动），全过：`cd ros_ws/src/led_display && PYTHONPATH=. /usr/bin/python3 -m pytest test/`
+- 本机连真屏测过：亮度、发 192×192 的 GIF（转成 32×16、50 帧、34KB）、「hello 你好」滚动、`led_node` 收 `/led/text` + `/led/brightness` 后 `/led/state` 显示 `connected: true`
+- **没测**：开关屏、速度、旋转、时钟、`/led/gif`、长时间挂着断线重连
+
+### 上机器人（还没做）
+
+10-25 机器人 192.168.1.124 能 ping 通但 ssh 超时，没上去看。上机器人前要先确认：
+1. 机器人有没有蓝牙：`ls /sys/class/bluetooth`、`systemctl is-active bluetooth`、`bluetoothctl show`。RDK X5 没有就插 USB 蓝牙棒
+2. 装依赖：`pip3 install --user bleak==3.0.2`（机器人是 Python 3.10，bleak 3.x 支持）、`sudo apt install python3-pil`
+3. 拷字体到机器人 `~/max_robot/fonts/`
+4. rsync，`make_remote.sh --packages-select led_display`，先 `ros2 run led_display led_cli -v brightness 30` 测通再起节点
+5. 要的话加进网页后端 `config.yaml` 的进程列表（参照 `person`）
+
+### 坑
+
+- **扫不到任何蓝牙设备**（周围设备也一个都没有）：适配器卡在 discovering 状态，`bluetoothctl power off && bluetoothctl power on` 就好
+- 屏和 BlueZ 连着时不再广播，`BleakScanner` 扫不到，库里会退回按地址直接连
+- `package.xml` 注释里不能出现 `--`（XML 不允许），否则 colcon 把包识别成普通 python 包，不生成 ament 索引，`ros2 run` 报 `Package not found`
+- 10-25 本机先做的独立版在 `~/ledctl`（自带 venv），和仓库里的 `ledctl.py` 一样，以仓库为准
 
 ## 2026-10-23：本地 /api/v1 与任务层
 
@@ -320,7 +510,7 @@ ECS：阿里云华东1（杭州），实例 `i-bp126b3r9xltdbiti0d3`，Ubuntu 22
 
 ## 接手后第一件事
 
-代码都已提交（10-23 晚 `git status` 只有 `ros_ws/src/3rdparty/` 下的 libpointmatcher、pangolin、spdlog 未跟踪，不是项目改动，别加进去）。要做的是把 10-23 的代码同步上机器人：
+10-23 之前的代码都已提交（`git status` 里 `ros_ws/src/3rdparty/` 下的 libpointmatcher、pangolin、spdlog 未跟踪，不是项目改动，别加进去）。10-25 新增的 `ros_ws/src/led_display/` 和本文件的改动**还没提交**；仓库根的 `Weixin Image_*.png` 是需求截图，也没跟踪。要做的是把 10-23 的代码同步上机器人：
 
 ```bash
 # 本机（rsync.sh 里是有线 IP 192.168.10.42，走 Wi-Fi 时改成 192.168.1.124）

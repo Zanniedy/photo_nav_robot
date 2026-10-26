@@ -40,3 +40,4 @@ ros_ws/src/**/*.a
 ros_ws/src/**/*.so
 .superpowers/
 .venv_web/
+.venv_piper/

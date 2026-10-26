@@ -4,6 +4,9 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdio>
+
 #include <limits>
 
 using namespace lioslam;
@@ -110,4 +113,54 @@ TEST(Deskew, ImprovesIcpWhileTurningAndDriving) {
     EXPECT_LT(fix.t, 0.02);
     EXPECT_LT(fix.r, 0.5 * M_PI / 180);
     EXPECT_GT(raw.r, 2.0 * fix.r);
+}
+
+// 同一个关键帧连续匹配多帧：kd-tree 只建一次，结果和每次重建一样准；换关键帧才重建
+TEST(ScanMatch, KeyframeTreeCached) {
+    const Pose2 T_bl = make_pose(0.25, 0.0, M_PI / 2);
+    scan_match m;
+    Deskew none;
+    const DP ref = m.make_points(make_scan(make_pose(0, 0, 0), T_bl, 0.0, 0.0), none);
+    for (int k = 1; k <= 5; ++k) {
+        const Pose2 T_w_cur = make_pose(0.05 * k, 0.01 * k, 0.03 * k);
+        const DP cur = m.make_points(make_scan(T_w_cur, T_bl, 0.0, 0.0), none);
+        const Pose2 truth = T_bl.inverse() * (T_w_cur * T_bl);
+        bool ok = false;
+        const Pose2 est = m.match(ref, cur, truth * make_pose(0.02, -0.02, 0.01), ok);
+        ASSERT_TRUE(ok);
+        const Pose2 e = truth.inverse() * est;
+        EXPECT_LT(e.translation().norm(), 0.02);
+        EXPECT_LT(std::abs(pose_yaw(e)), 0.01);
+    }
+    EXPECT_EQ(m.map_builds(), 1u);
+    const DP ref2 = m.make_points(make_scan(make_pose(0.3, 0, 0.2), T_bl, 0.0, 0.0), none);
+    bool ok = false;
+    m.match(ref2, ref2, Pose2::Identity(), ok);
+    EXPECT_EQ(m.map_builds(), 2u);
+}
+
+// 计时对比（打印结果）：同一个关键帧匹配 50 帧，旧写法每帧 ICP::operator() 重算 ref 法向量 + 建树，
+// 新写法 ICPSequence 只建一次
+TEST(ScanMatch, CachedTreeIsFaster) {
+    const Pose2 T_bl = make_pose(0.25, 0.0, M_PI / 2);
+    scan_match m;
+    Deskew none;
+    const DP ref = m.make_points(make_scan(make_pose(0, 0, 0), T_bl, 0.0, 0.0), none);
+    std::vector<DP> cur;
+    for (int k = 0; k < 50; ++k) cur.push_back(m.make_points(make_scan(make_pose(0.004 * k, 0.002 * k, 0.003 * k), T_bl, 0.0, 0.0), none));
+    // 同一套配置：一个每次都 clearMap（旧行为），一个缓存
+    scan_match fresh;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int r = 0; r < 4; ++r)
+        for (const auto& c : cur) { bool ok; fresh.match_rebuild(ref, c, Pose2::Identity(), ok); }
+    const auto t1 = std::chrono::steady_clock::now();
+    for (int r = 0; r < 4; ++r)
+        for (const auto& c : cur) { bool ok; m.match(ref, c, Pose2::Identity(), ok); }
+    const auto t2 = std::chrono::steady_clock::now();
+    const double old_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / 200;
+    const double new_ms = std::chrono::duration<double, std::milli>(t2 - t1).count() / 200;
+    std::printf("[bench] ref=%ld cur=%ld 点  每帧重建 %.3fms  缓存 %.3fms  省 %.0f%%\n",
+                static_cast<long>(ref.getNbPoints()), static_cast<long>(cur[0].getNbPoints()),
+                old_ms, new_ms, 100.0 * (1.0 - new_ms / old_ms));
+    EXPECT_LT(new_ms, old_ms);
 }

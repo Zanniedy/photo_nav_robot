@@ -20,6 +20,7 @@
           <AnnotPanel v-show="tab === 'annot'" />
           <StatusPanel v-show="tab === 'status'" />
           <CommandPanel v-show="tab === 'cmd'" />
+          <TaskLogPanel v-show="tab === 'task'" />
           <LogPanel v-show="tab === 'log'" />
         </div>
       </aside>
@@ -38,6 +39,7 @@ import StatusPanel from './components/StatusPanel.vue'
 import AnnotPanel from './components/AnnotPanel.vue'
 import CommandPanel from './components/CommandPanel.vue'
 import LogPanel from './components/LogPanel.vue'
+import TaskLogPanel from './components/TaskLogPanel.vue'
 import CameraWindow from './components/CameraWindow.vue'
 import VelocityWindow from './components/VelocityWindow.vue'
 import { store, checkAuth } from './lib/store.js'
@@ -51,6 +53,7 @@ const TABS = [
   { id: 'annot', label: '标注' },
   { id: 'status', label: '状态' },
   { id: 'cmd', label: '命令' },
+  { id: 'task', label: '任务' },
   { id: 'log', label: '日志' },
 ]
 const read = (k, d) => { try { return localStorage.getItem(k) || d } catch { return d } }

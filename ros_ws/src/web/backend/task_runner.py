@@ -21,6 +21,11 @@ HISTORY = 50                        # 保留最近多少个任务（含已结束
 TERMINAL = ("succeeded", "failed", "canceled", "preempted")
 
 
+# nav2 本身没准备好（bt_navigator 没激活、action server 不在线）：不是这个点去不了，巡逻暂停后重试同一个点
+NAV_DOWN = ("nav2 拒绝了目标", "nav2 action server 不在线")
+NAV_RETRY_S = 5.0
+
+
 class TaskError(Exception):
     def __init__(self, code: str, msg: str):
         super().__init__(msg)
@@ -34,7 +39,7 @@ class NavPort(Protocol):
     def current_map_id(self) -> str | None: ...
     def loc_score(self) -> float | None: ...
     def pose(self) -> tuple[float, float, float] | None: ...
-    def nearest_person(self) -> float | None: ...
+    def nearest_person(self, require_face: bool = False) -> float | None: ...
     def send_goal(self, x: float, y: float, yaw: float, on_done: Callable[[bool, str], None]) -> None: ...
     def cancel_goal(self) -> None: ...
     def set_speed_limit(self, v: float | None) -> None: ...
@@ -171,6 +176,27 @@ class TaskRunner:
             self._resume(t)
             return self._summary(t)
 
+    def pause_patrol(self, reason: str) -> bool:
+        """暂停当前巡逻（打招呼用）。没有在跑的巡逻 → False"""
+        with self._lock:
+            p = self._patrol
+            if p is None or p.state != "running":
+                return False
+            self._suspend(p, reason)
+            return True
+
+    def resume_patrol(self) -> str:
+        """恢复当前巡逻，返回空串 = 成功，否则是原因"""
+        with self._lock:
+            p = self._patrol
+            if p is None:
+                return "巡逻已经结束"
+            try:
+                self.resume(p.id)
+            except TaskError as e:
+                return e.msg
+            return ""
+
     def get(self, task_id: str) -> dict | None:
         with self._lock:
             t = self._history.get(task_id)
@@ -212,6 +238,12 @@ class TaskRunner:
                 return
             now = self._clock()
             if p.state == "waiting":
+                if p.wait_reason == "lost":           # 定位丢失：由 mission 等定位恢复后继续，不按超时自动走
+                    return
+                if p.wait_reason == "nav":            # nav2 没准备好：隔一会儿重试同一个点
+                    if self._fg is None and now - p.wait_since >= NAV_RETRY_S:
+                        self._resume(p)
+                    return
                 if self._fg is None and self.cfg.wait_timeout > 0 and now - p.wait_since >= self.cfg.wait_timeout:
                     try:
                         self.check()
@@ -313,6 +345,10 @@ class TaskRunner:
             if ok:
                 t.fails = 0
                 t.message = f"已到达 {name}"
+            elif t.type == "patrol" and msg in NAV_DOWN:
+                t.message = f"{msg}，{NAV_RETRY_S:.0f}s 后重试 {name}"
+                self._suspend(t, "nav")
+                return
             elif t.type == "patrol":
                 # 巡航里某个点去不了：跳过；连续一整圈都去不了才算失败
                 t.fails += 1

@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-import auth, api_errors, process_mgr, runtime
+import auth, api_errors, patrol_file, process_mgr, runtime
 from config import AUTOSTART, PROCESSES
 from routers import annotations, captures, commands, diag, rosproxy, stack, v1_robot, v1_data, v1_tasks
 
@@ -19,6 +19,7 @@ def _autostart():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     runtime.start()          # 任务层先起来，autostart 进导航后就能接任务
+    patrol_file.sync(log=lambda s: process_mgr.log("ui", s))
     _autostart()
     yield
     try:

@@ -1,0 +1,10 @@
+led_display:
+  ros__parameters:
+    address: "7D:39:31:D9:32:FE"   # 屏的蓝牙地址，名字 "LED 16*32-D932FE-L"
+    font_path: ""                   # 空 = 按 ledctl.FONT_CANDIDATES 顺序找（先找 ~/max_robot/fonts/cusong16.ttf）
+    color: [255, 0, 0]              # /led/text 默认颜色
+    brightness: 0                   # 1..100，连上后设置；0 = 不改
+    reconnect_interval: 5.0
+    verbose: false                  # true 时打印收发字节
+    idle: eyes                      # 连上后显示待机眼睛；"" = 不管屏上原来的内容
+    eyes_color: [0, 160, 255]

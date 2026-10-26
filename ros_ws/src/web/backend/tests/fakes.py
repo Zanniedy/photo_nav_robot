@@ -49,13 +49,32 @@ class FakeNav:
         self.cancels = 0
         self.speed: float | None = None
         self.estop = False
+        self.led: list[tuple] = []
+        self.person_st: dict | None = None     # /person/state（自检）
+        self.led_st: dict | None = None        # /led/state（自检）
+        self.target: float | None = None
+        self.approaches: list[tuple] = []
+        self.ap_state, self.ap_ok, self.ap_cancels = "idle", True, 0
+        self.loc: dict | None = {"state": "tracking", "score": 0.55, "dynamic": 0.0}
 
     def nav_running(self): return self.running
     def mapping(self): return self.is_mapping
     def current_map_id(self): return self.map_id
     def loc_score(self): return self.score
     def pose(self): return self.robot_pose
-    def nearest_person(self): return self.person
+    def nearest_person(self, require_face=False): return self.person
+    def target_distance(self): return self.target
+    def approach_start(self, distance, timeout):
+        self.approaches.append((distance, timeout))
+        self.ap_state = "running"
+        return self.ap_ok
+    def approach_cancel(self): self.ap_state = "idle"; self.ap_cancels += 1
+    def approach_state(self): return self.ap_state
+    def localizer_state(self): return self.loc
+    def led_text(self, text): self.led.append(("text", text))
+    def led_eyes(self): self.led.append(("eyes",))
+    def person_info(self): return self.person_st
+    def led_state(self): return self.led_st
 
     def send_goal(self, x, y, yaw, on_done):
         self.goals.append((x, y, yaw))

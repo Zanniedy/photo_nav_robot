@@ -1,16 +1,29 @@
 """
-后端进程里的单例：任务层（TaskRunner）+ 导航接口（RosLink）+ 事件推送（EventHub）。
+后端进程里的单例：任务层（TaskRunner）+ 导航接口（RosLink）+ 事件推送（EventHub）+ LED/语音打招呼（Greeter、Voice）。
 start() 在 FastAPI lifespan 里调；测试里用 install(FakeNav()) 代替，不起 ROS。
 后端重启时正在跑的任务会中断（导航进程本来就归后端管）。急停状态写在 state 文件里，重启后保持。
 """
 import os, threading
-import process_mgr, state
-from config import ROS_DOMAIN_ID, TASKS
+import process_mgr, state, tasklog
+from config import GREET, ROS_DOMAIN_ID, TASKS, VOICE
 from events import EventHub
+from greeter import Greeter, GreeterConfig
+from mission import Mission
 from task_runner import RunnerConfig, TaskRunner
+from voice import Voice, VoiceConfig
 
 hub = EventHub()
+
+
+def _emit(ev: dict) -> None:
+    """事件同时推给 /api/v1/events 和任务日志"""
+    hub.publish(ev)
+    tasklog.on_event(ev)
+
 runner: TaskRunner | None = None
+greeter: Greeter | None = None
+mission: Mission | None = None
+voice = Voice(VoiceConfig.from_dict(VOICE), log=lambda s: process_mgr.log("ui", s))
 nav = None
 _stop = threading.Event()
 _ticker_thread: threading.Thread | None = None
@@ -24,7 +37,16 @@ class NullNav:
     def current_map_id(self): return None
     def loc_score(self): return None
     def pose(self): return None
-    def nearest_person(self): return None
+    def nearest_person(self, require_face=False): return None
+    def target_distance(self): return None
+    def approach_start(self, distance, timeout): return False
+    def approach_cancel(self): pass
+    def approach_state(self): return "idle"
+    def localizer_state(self): return None
+    def led_text(self, text): pass
+    def led_eyes(self): pass
+    def person_info(self): return None
+    def led_state(self): return None
     def send_goal(self, x, y, yaw, on_done): on_done(False, "ROS 不可用")
     def cancel_goal(self): pass
     def set_speed_limit(self, v): pass
@@ -32,12 +54,37 @@ class NullNav:
     def shutdown(self): pass
 
 
-def install(nav_port, cfg: RunnerConfig | None = None, estopped: bool = False) -> TaskRunner:
-    global runner, nav
+class _Patrol:
+    """greeter.PatrolPort：接到任务层的巡逻"""
+    def active(self) -> bool:
+        p = runner.current().get("patrol") if runner is not None else None
+        return p is not None and p["state"] in ("running", "waiting")
+
+    def pause(self) -> None:
+        runner.pause_patrol("person")
+
+    def resume(self) -> str:
+        return runner.resume_patrol()
+
+
+def install(nav_port, cfg: RunnerConfig | None = None, estopped: bool = False,
+            greet_cfg: GreeterConfig | None = None) -> TaskRunner:
+    global runner, nav, greeter
     nav = nav_port
-    runner = TaskRunner(nav_port, cfg or RunnerConfig.from_dict(TASKS), emit=hub.publish, estopped=estopped)
+    runner = TaskRunner(nav_port, cfg or RunnerConfig.from_dict(TASKS), emit=_emit, estopped=estopped)
+    greeter = Greeter(nav_port, _Patrol(), greet_cfg or GreeterConfig.from_dict(GREET), emit=_emit,
+                      say=voice.say)
+    global mission
+    mission = Mission(runner, greeter, nav_port.localizer_state, log=_mission_log)
     nav_port.set_estop(estopped)
     return runner
+
+
+def _mission_log(kind: str, text: str) -> None:
+    """状态机：状态变化记进任务日志；每 3s 的状态行另外存（网页「任务」页签单独一栏）并打到后端输出"""
+    tasklog.add(kind, text)
+    if kind == "tick":
+        print(f"[状态机] {text}", flush=True)
 
 
 def start() -> None:
@@ -64,6 +111,11 @@ def _ticker() -> None:
             runner.tick()
         except Exception as e:
             process_mgr.log("ui", f"任务层 tick 出错: {e}")
+        try:
+            mission.tick()
+        except Exception as e:
+            process_mgr.log("ui", f"任务状态机 / 打招呼出错: {e}")
+
 
 
 def stop() -> None:

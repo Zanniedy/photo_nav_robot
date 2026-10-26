@@ -27,3 +27,8 @@ export async function setParam(name, value) {
   if (res && !res.successful) throw new Error(res.reason || `设置 ${name} 失败`)
   return r
 }
+
+// 相机-雷达外参标定（只标相机 yaw，见 person_locator/extcal.py）
+export const extcalStart = () => callService('/person/extcal_start', 'std_srvs/Trigger')
+export const extcalSolve = () => callService('/person/extcal_solve', 'std_srvs/Trigger')
+export const extcalSave = () => callService('/person/extcal_save', 'std_srvs/Trigger')

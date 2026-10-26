@@ -315,7 +315,7 @@ private:
 
         GainAdapter& g = vx_gain(a.vx);
         g.update(a.vx, v, dt);
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
             "[CMD] vx adapt: cmd=%.3f meas=%.3f k_%s=%.3f", a.vx, v, a.vx > 0 ? "fwd" : "rev", g.k);
     }
 
@@ -443,7 +443,7 @@ private:
                 stash.erase(stash.begin(), stash.begin() + sizeof(PcUpFrame));
                 total_frames++;
 
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                     "[RX] frame #%zu Yaw=%.3f° YawSpeed=%.3f°/s",
                     total_frames, f.Yaw, f.Yaw_Speed);
 
@@ -559,7 +559,7 @@ private:
             yaw_pub_->publish(yaw_msg);
             yaw_speed_pub_->publish(yaw_speed_msg);
 
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+            RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 500,   // 周期日志关掉（10-26），要看用 --log-level debug
                 "[IMU] yaw=%.3f° bias=%.4f°/s static=%d yaw_speed=%.3f°/s (raw: yaw=%.3f° speed=%.3f°/s)",
                 yaw_out, bias_deg_per_s, is_static, static_cast<double>(yaw_speed_filtered_),
                 wrap_deg(s.yaw - yaw_offset_), static_cast<double>(s.yaw_speed));
