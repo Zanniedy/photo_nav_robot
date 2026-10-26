@@ -116,7 +116,8 @@ controller_server:
   ros__parameters:
     use_sim_time: False
     # ARM 上 20Hz 跑不满（日志 missed desired rate）；MPPI model_dt 与此对应
-    controller_frequency: 10.0
+    # 10-26：降速后 5Hz 足够（0.18m/s 一个周期走 3.6cm），MPPI 计算量减半
+    controller_frequency: 5.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
@@ -149,23 +150,23 @@ controller_server:
       primary_controller: "nav2_mppi_controller::MPPIController"
       angular_dist_threshold: 1.0           # ~57°：只有起步/掉头这种大偏差才原地转，其余交给 MPPI 边走边转
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.6    # 原地转慢一点更稳，仍在死区以上（u≈0.2）
+      rotate_to_heading_angular_vel: 0.5    # 10-26 0.6→0.5：转得慢，ICP 每帧角度小；仍在 bridge 转向死区 0.45 以上
       max_angular_accel: 1.2                # 与 bridge cmd_wz_acc 一致
       simulate_ahead_time: 1.0
     # MPPI：采样式 MPC，差速模型前向预测 time_steps*model_dt = 4s。ARM(A55) 上采样规模压到 600 条
     # 底盘：MCU 接收摇杆量 [-1,1]，比例控制（有死区），robot_bridge 平滑 + 标定换算
       motion_model: "DiffDrive"
-      time_steps: 40
-      model_dt: 0.1                 # 与 controller_frequency 10Hz 一致
+      time_steps: 20
+      model_dt: 0.2                 # 与 controller_frequency 5Hz 一致，预测时长仍是 20*0.2 = 4s
       batch_size: 600
       iteration_count: 1
       temperature: 0.3
       gamma: 0.015
       vx_std: 0.15                  # 采样噪声小一些，输出更平滑
       wz_std: 0.3
-      vx_max: 0.25                  # 慢但顺：同时也给 lio 留余量
+      vx_max: 0.18                  # 10-26 0.25→0.18：板子负载高，走慢一点 lio / 定位每帧的位移小，跟得上
       vx_min: 0.0                   # 不倒车
-      wz_max: 0.8                   # 雷达 10Hz，转太快 ICP 跟不上
+      wz_max: 0.5                   # 10-26 0.8→0.5：雷达 10Hz，转太快 ICP 跟不上（每帧 2.9°）
       ax_max: 0.4                   # 与 bridge cmd_vx_acc 一致
       ax_min: -0.6                  # 与 bridge cmd_vx_dec 一致
       az_max: 1.2                   # 与 bridge cmd_wz_acc 一致

@@ -16,12 +16,13 @@ class VoiceConfig:
     lang: str = "zh"                # zh / en，对应 <名字>_<语言>.wav
     player: str = "paplay"          # 播放命令，wav 路径加在最后
     device: str = ""                # 非空：paplay 加 -d，aplay 加 -D
+    volume: int = 100               # 0~100：paplay 时播放前把 sink 音量设成这个（10-26 机器人上被调到 20%，几乎听不见）；-1 = 不动
     dir: str = VOICE_DIR
 
     @classmethod
     def from_dict(cls, d: dict) -> "VoiceConfig":
-        out = {f.name: (bool(d[f.name]) if f.name == "enabled" else str(d[f.name]))
-               for f in fields(cls) if f.name in (d or {})}
+        conv = {"enabled": bool, "volume": int}
+        out = {f.name: conv.get(f.name, str)(d[f.name]) for f in fields(cls) if f.name in (d or {})}
         if "dir" in out:
             out["dir"] = os.path.expanduser(out["dir"])
         return cls(**out)
@@ -45,6 +46,11 @@ class Voice:
             cmd += ["-D" if os.path.basename(cmd[0]) == "aplay" else "-d", self.cfg.device]
         return cmd + [self.path(key)]
 
+    def volume_command(self) -> list[str] | None:
+        if self.cfg.volume < 0 or os.path.basename(shlex.split(self.cfg.player)[0]) != "paplay":
+            return None
+        return ["pactl", "set-sink-volume", self.cfg.device or "@DEFAULT_SINK@", f"{min(100, self.cfg.volume)}%"]
+
     def say(self, key: str) -> bool:
         """开始播放，返回是否真的起了播放进程"""
         if not self.cfg.enabled:
@@ -58,6 +64,12 @@ class Voice:
         env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
         with self._lock:
             self._stop_locked()
+            vc = self.volume_command()
+            if vc:
+                try:
+                    subprocess.run(vc, env=env, capture_output=True, timeout=3)
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    self._log(f"设置音量失败: {e}")
             try:
                 self._proc = self._popen(self.command(key), env=env, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

@@ -17,6 +17,7 @@
 """
 import asyncio
 import json
+import subprocess
 import threading
 
 import rclpy
@@ -99,6 +100,7 @@ class LedNode(Node):
                 except Exception as e:
                     self._publish_state(connected=False, error=f"连接失败: {e}")
                     self.get_logger().warn(f"LED 连接失败，{self.reconnect_s}s 后重试: {e}", throttle_duration_sec=60)
+                    self._drop_stale_link()
                     await asyncio.sleep(self.reconnect_s)
                     continue
 
@@ -119,6 +121,17 @@ class LedNode(Node):
                 self._publish_state(connected=led.connected, error=f"{key}: {e}")
                 if not led.connected:
                     self._pending.setdefault(key, value)  # 断线导致的，重连后再发一次
+
+    def _drop_stale_link(self):
+        """上一个 led_node 被强杀时 BlueZ 里还留着到屏的连接：屏被占着不广播，新连接报 not found。
+        只有本节点连这块屏，连不上时 BlueZ 显示 Connected 就是残留的，断掉（10-26 碰到过）"""
+        try:
+            info = subprocess.run(["bluetoothctl", "info", self.address], capture_output=True, text=True, timeout=5).stdout
+            if "Connected: yes" in info:
+                subprocess.run(["bluetoothctl", "disconnect", self.address], capture_output=True, timeout=10)
+                self.get_logger().info(f"断开了 BlueZ 里残留的连接 {self.address}")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self.get_logger().warn(f"检查残留连接失败: {e}", throttle_duration_sec=60)
 
     async def _apply(self, led, key, value):
         if key == "brightness":

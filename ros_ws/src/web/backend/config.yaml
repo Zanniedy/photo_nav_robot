@@ -32,7 +32,7 @@ robot_file: "~/max_robot/robot.yaml"
 
 # 任务层（/api/v1/tasks）
 tasks:
-  default_speed: 0.25     # 估算剩余时间用，和 nav2 vx_max 一致
+  default_speed: 0.18     # 估算剩余时间用，和 nav2 vx_max 一致
   guide_speed: 0.15       # guide 默认限速 m/s
   min_score: 0.0          # 定位分数门限，0 = 不检查；上车看过 /localizer/score 正常值后再定
   wait_on_person: false   # 巡航中发现人自动停下等待（人员检测实测通过后再开）
@@ -65,6 +65,7 @@ voice:
   # USB 声卡 HECATE G1200，按 by-id 绑定（/dev/snd/by-id/usb-_HECATE_G1200-00 → PulseAudio sink 名），换 USB 口不变
   # 空 = 默认输出；换 aplay 时填 plughw:CARD=G1200
   device: alsa_output.usb-_HECATE_G1200-00.analog-stereo
+  volume: 100             # 播放前把这个 sink 的音量设成多少 %（10-26 发现被调到 20%）；-1 = 不动
 
 # 后端启动时自动拉起的进程；若 state_file 里设置了默认地图，base 起来后会直接进导航
 #   points: 点位 ROS 服务 /points/*（依赖 robot_interfaces 已编译）

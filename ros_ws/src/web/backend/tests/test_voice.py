@@ -44,3 +44,13 @@ def test_from_dict_and_repo_wavs():
     assert c.enabled is False and c.lang == "en" and c.dir == os.path.expanduser("~/x")
     for lang in ("zh", "en"):
         assert os.path.isfile(os.path.join(VOICE_DIR, f"greet_{lang}.wav"))
+
+
+def test_volume_command():
+    v = Voice(VoiceConfig(device="usb_sink", volume=80))
+    assert v.volume_command() == ["pactl", "set-sink-volume", "usb_sink", "80%"]
+    v.cfg.volume = -1
+    assert v.volume_command() is None
+    v.cfg.volume, v.cfg.player = 100, "aplay -q"
+    assert v.volume_command() is None
+    assert VoiceConfig.from_dict({"volume": "60"}).volume == 60

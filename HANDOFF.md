@@ -3,39 +3,42 @@
 平面移动机器人：2D 激光（思岚 C1）+ 底盘 MCU（串口上报 yaw），无轮速计。
 链路：`robot_bridge` → `lio_slam_node`（帧间 ICP）→ `lio_ekf_node` → slam_toolbox 建图 / map_localizer + Nav2（MPPI）导航，外加网页控制台 **MAX_NAV_ROBOT**（`ros_ws/src/web`）。
 
-- git 根：`/home/lsy/cs_project/robot`，远端 `github.com/Zanniedy/photo_nav_robot`（main）
+- git 根：`/home/lsy/cs_project/robot`，远端 `github.com/Zanniedy/photo_nav_robot`（main；10-26 的工作在 `stage1-voice`）
 - 实机：**现在统一走有线** `sunrise@192.168.10.42`（本机有线口 192.168.10.88）。无线备用：手机热点「罗莳远」（DHCP，10-26 是 10.43.231.227，会变），用 `ROBOT=sunrise@<ip> bash rsync.sh`；以后打算走公网转发。ARM64，代码在 `~/max_robot/ros_ws`，地图在 `~/max_robot/maps`
-- 同步：`bash rsync.sh`（本机执行）；远端编译：`bash make_remote.sh [--packages-select ...]`（机器人上执行）。**编译、重启后端都用 `setsid nohup ... &` 在机器人上后台跑**，10-26 网线松了一次，ssh 断开时前台命令跟着中断
+- 同步：`bash rsync.sh`（本机执行）；**编译 + 重启用 `web/redeploy.sh [包...]`**（机器人上，ssh 里 `setsid nohup bash ~/max_robot/ros_ws/src/web/redeploy.sh robot_nav > ~/max_robot/redeploy.log 2>&1 < /dev/null &`），它会停干净、`-j4` 编译、清 FastDDS 共享内存再起后端。不要前台编译（10-26 网线松过、板子过载重启过）
 
-## 一览（10-26）
+## 一览（10-26 23:30）
 
-| 模块 | 状态 | 提交 |
-|---|---|---|
-| 底盘控制闭环、速度估计、lio 去畸变、Nav2 调参、网页速度曲线等 | 已上机器人，大部分没实车验证 | `745b9f1` |
-| **EKF yaw 参考系修复**（`lio_ekf.hpp`） | 本机 gtest 3 个过；已上机器人，静止 yaw 波动 2.3°→0.01°；**导航没复测** | 未提交 |
-| BPU 检测模型 v2（真实照片校准，调试用） | 已上板，能用但慢（117~180ms/帧） | 模型文件不在 git 里 |
-| 人员跟踪 + 走到人面前（`person_tracker`、`/person/approach`） | 已上机器人，10-26 晚改为开机自启，**没在有人的场景实测** | `ce97711`、`615cdad` |
-| 相机-雷达外参标定（只标 yaw，`extcal.py` + 网页） | 已上机器人，**没实测** | 未提交 |
-| 人脸检测 YuNet（`face.py`）+ `require_face` + 网页预览叠检测框 + 网页里启停 person | 已上机器人；122 张实拍照片测过（41 张脸，框都对），**没在线实测** | 未提交 |
-| 本地 `/api/v1` + 任务层（goto/guide/patrol、巡航等待、急停、token） | 已上机器人（10-26 随后端一起），后端单测 94 个全过，**巡逻没实测** | `7c3d95b`..`c129d4b` + 未提交 |
-| 巡逻遇人状态机 `greeter.py`（idle→search→greet）+ 网页「任务」页签 | 已上机器人，单测过，**没实测** | 未提交 |
-| 蓝牙 LED `led_display`（+ 眼睛动画、`/led/eyes`、`idle: eyes`） | 机器人蓝牙已打通（rfkill 解除、bleak 3.0.2、字体），机器人直连屏发文字/眼睛都测过；`led` 进程没在后端里实际起过 | 未提交 |
-| 语音播报 piper TTS（预合成 wav，`voice.py`，greet 时和 LED 一起播） | 本机 USB 声卡（HECATE G1200）播放测过，后端单测 98 个全过；**没同步机器人，机器人上还没插 USB 声卡** | 未提交 |
-| 亚博 Speech_Lib 离线命令词模块 | 不用于播报；以后可能用来听「你好 Max」唤醒词 | — |
-| 云（ECS + EMQX + `cloud_agent`） | 没动 | — |
+| 模块 | 状态 |
+|---|---|
+| EKF yaw 参考系修复（`lio_ekf.hpp`） | 已上机器人，静止 yaw 波动 2.3°→0.01° |
+| lio：关键帧 kd-tree 缓存、单线程 OpenMP、只处理最新帧、动态点过滤 | 已上机器人，lio 95%→9% CPU、odom 延迟 0.12s |
+| map_localizer：动态点过滤、丢失→从当前位置外扩重定位、`/localizer/state` | 已上机器人；**丢失恢复没实测**（现场内点率 0.42~0.58，阈值已放宽） |
+| 任务总状态机 `mission.py`（巡逻/丢失/恢复/人脸/等待，每 3s 打印）+ 网页「任务」页签 | 已上机器人 |
+| 巡逻遇人 `greeter.py`：看到人脸 → 走向人 → ≤2m 打招呼（LED + 语音）→ 继续巡逻 | **23:15 实测流程走通**（2.4m 看到 → 1.9m 打招呼 → 8s 后继续巡逻）；当时 LED、语音没出来，原因已修（见 10-26 23:20 一节），**修完没再实测** |
+| 蓝牙 LED `led_display`（眼睛动画、`/led/eyes`） | 已上机器人，开机自启，连上显示眼睛 |
+| 语音 piper 预合成 wav（`voice.py`，英文） | 已上机器人，USB 声卡 HECATE G1200 |
+| 人员跟踪 + 人脸 YuNet + 网页检测框 | 已上机器人，开机自启；**相机改 640x480 后要重新标定**，现在按 70° 视场估内参，人的方位不准 |
+| 相机-雷达外参标定（只标 yaw） | 已上机器人，**没实测** |
+| 导航降速（0.18m/s、0.5rad/s、控制 5Hz）、bt_navigator 超时 1000ms | 已上机器人，**没在导航里实测** |
+| 亚博 Speech_Lib 离线命令词模块 | 不用于播报；以后可能用来听唤醒词 |
+| 云（ECS + EMQX） | 没动 |
 
-需求（10-25 飞书「Max_robot」）：STAGE1 巡航识别到人脸后固定语音播报；STAGE2 识别到人脸后通过蓝牙把文字发到 LED 软屏；STAGE3 识别到人脸后发信号给 AI 端交互。10-26 用户细化：**巡逻中看到人脸 → 进入搜索（走向人）→ 距离 ≤2m（靠激光+跟踪，近处人脸拍不全）→ LED 显示 `hello i am max` → 回到眼睛、继续巡逻**；语音先只留接口。分支 `stage1-voice` / `stage2-led` / `stage3-ai` 都还是空的，10-26 的改动全在工作区没提交（当前分支 `stage1-voice`）。
+需求（10-25 飞书「Max_robot」）：STAGE1 巡航识别到人脸后固定语音播报；STAGE2 识别到人脸后蓝牙 LED 软屏显示文字；STAGE3 识别到人脸后发信号给 AI 端交互。10-26 细化：**巡逻中看到人脸 → 搜索（走向人）→ 距离 ≤2m（靠激光+跟踪，近处人脸拍不全）→ LED `hello i am max` + 语音 → 回到眼睛、继续巡逻**。10-26 的代码都在分支 `stage1-voice`（`6d15bd9 大提交` + 之后的提交）。
 
 接下来按顺序：
-1. **导航复测**：EKF 已修好（静止不再抖），网页开导航、给初始位姿，看定位和导航
-1. **定位丢失恢复实测**：导航中把机器人抱走/盖住雷达 → 「任务」页签看 丢失 → 恢复 → 巡逻；看后端日志 `外扩搜索：...耗时` 和误报；有人走过时看 `dynamic points dropped`
-2. 外参标定：网页「人员跟随 → 相机-雷达外参」（10-26 第二节）；fx 粗估差得多就先重标内参
-3. 实测人脸：相机窗口「启动检测」，看框
-4. 实测巡逻遇人：状态页起 `led`、`nav`、`person`，开一条巡逻路线，「任务」页签看状态（10-26 第三节）
-5. `camera_node` 占满一个核（94%，读帧线程），rosbridge 也 95%：可以降相机帧率 / 只按需发布；网页 `/tf` 订阅没节流
-6. 跑 v3 模型转换（Softmax 放 BPU），目标 50ms/帧；到实际环境拍照重新校准正式版模型
-7. 网页路线编辑界面（一键巡逻按钮 10-26 晚已做；路线现在靠 `~/max_robot/patrol.yaml`）
-8. 提交：问用户分到哪个 stage 分支
+1. 重新标定相机（640x480，网页相机窗口「标定」），再做相机-雷达外参标定（「人员跟随 → 相机-雷达外参」）
+2. 巡逻遇人复测：看打招呼时屏和语音有没有出来；音量 `config.yaml` 的 `voice.volume`
+3. 导航（降速后）和定位丢失恢复实测：「任务」页签看 丢失 → 恢复 → 巡逻；后端日志看 `外扩搜索：...`
+4. 剩下的 CPU 大头：rosbridge（网页开着 ~100%，网页 `/tf` 订阅没节流）、person_tracker ~80%
+5. 机器人时间：没 RTC、NTP 没生效，重启后回到 2000-01-01（10-26 用 `sudo date -s` 手动设过）；后端没做开机自启
+6. 跑 v3 模型转换（Softmax 放 BPU），目标 50ms/帧；实际环境拍照重新校准正式版模型
+
+## 2026-10-26 23:20：打招呼时 LED、语音没出来
+
+- 23:15 实测：任务日志 `[搜索] 看到人脸 2.4m` → `[打招呼] 距离 1.9m` → 8s 后 `继续`，流程对，但屏和语音都没出来
+- LED：`/led/state` 一直 `连接失败: Device ... was not found`。BlueZ 里还挂着到屏的旧连接（`bluetoothctl info` 显示 `Connected: yes`）——之前重启时 led_node 被强杀，连接没断，屏被占着不广播。手动 `bluetoothctl disconnect` 后马上连上。**修复**：`led_node` 连接失败时查 `bluetoothctl info`，是 `Connected: yes` 就先断掉再重连
+- 语音：`paplay` 本身正常（退出码 0），但 USB 声卡 sink 音量只有 **20%**（-42dB），听不见。**修复**：`voice.py` 播放前 `pactl set-sink-volume <device> <volume>%`，`config.yaml` 的 `voice.volume`（默认 100，-1 = 不动）。单测 1 个，后端 111 个全过
 
 ## 2026-10-26 晚：巡逻遇人实测 1 —— 看到人后不走过去、反而开走
 
@@ -76,6 +79,28 @@
 - 试播：`cd ros_ws/src/web/backend && python3 voice.py greet en`
 - 单测 `tests/test_voice.py` 3 个 + `test_greeter.py` 加 1 个
 - 机器人上：USB 声卡已插（`/dev/snd/by-id/usb-_HECATE_G1200-00`，ALSA card 1 `G1200`），`voice.device` 按 by-id 绑定 sink `alsa_output.usb-_HECATE_G1200-00.analog-stereo`；声卡拔了 paplay 会失败，后端日志有「语音播放退出码」
+
+## 2026-10-26 深夜：CPU 开销、稳定性
+
+现象：导航时点云对不上地图（score 0.13）、nav2 拒绝目标、ros2 命令行卡住。根因都是板子过载（load 10~25）和重启留下的 FastDDS 残留。
+
+| 改动 | 效果（机器人实测） |
+|---|---|
+| lio ICP 关键帧缓存：`ICPSequence` 只在换关键帧时 `setMap`（法向量 + kd-tree），以前每帧对同一个关键帧重建 | 单帧匹配本机 9.1→1.4ms（-84%），`test_lio_deskew` 里有对比计时 |
+| `scan_to_dp` 去掉 `std::execution::par_unseq`（几百个点，TBB 调度比计算贵） | — |
+| lio 只处理最新一帧（积压的旧帧丢掉，DEBUG 日志） | odom 延迟 1.3~3s → 0.12s |
+| lio 进程 `OMP_NUM_THREADS=1`、`OMP_WAIT_POLICY=PASSIVE`（`robot.launch.py`）：libpointmatcher 默认 8 个 OpenMP 线程各自旋 10% | **lio 95% → 9% CPU** |
+| 相机 640x480（`camera.yaml`）+ 只按 `publish_rate` 10Hz 发布 | camera_node 100% → 33% |
+| nav2 `bt_navigator.default_server_timeout` 20→1000ms | 负载高时 bt_navigator 不再卡 inactive |
+| 降速：MPPI `vx_max` 0.25→0.18、`wz_max` 0.8→0.5、原地转 0.6→0.5；`controller_frequency` 10→5Hz（`model_dt` 0.2、`time_steps` 20，预测仍 4s） | MPPI 计算量减半，每帧位移/转角小，lio、定位跟得上（没实测导航） |
+| 周期日志关掉（`[IMU]` `[RX]` `[CMD]` `ICP ok` 等改 DEBUG），只打丢失相关：`ICP 开始被拒` / `ICP 恢复` / `reset keyframe` / 定位状态切换 / 外扩搜索结果 | — |
+| 任务层：nav2 拒绝目标 / action server 不在线时巡逻暂停 5s 重试同一个点，不再一路跳过 | — |
+| 定位阈值：`min_inlier_ratio` 0.5→0.4，判丢失还要被拒这串的平均内点率 < `lost_score` 0.3，恢复门限 0.6→0.5（现场正常跟踪 0.42~0.58） | — |
+
+- **相机换了 640x480，原来 1280x720 的标定不能用了**：要在网页相机窗口重新标定；没标之前 person_tracker 按 `fallback_hfov_deg`（70°）估内参，人的方位不准
+- **重启用 `web/redeploy.sh`**（停后端 → 停残留进程 → 可选编译 `-j4` → 清 `/dev/shm/fastrtps_*` → 起后端），ssh 里要 `setsid nohup ... &`。后端收到 SIGINT 60s 都退不干净，不清共享内存的话新节点之间发现不了（命令行卡住、`/map` 没发布者）
+- 机器人 23:3x 自己重启过一次（时间回到 2000-01-01：没 RTC、NTP 没生效，查不到原因；用本机时间 `date -s` 设回去了）；后端没有开机自启
+- 当时还没解决：rosbridge（网页开着时 ~100%，网页 `/tf` 订阅没节流）、person_tracker 80%
 
 ## 2026-10-26 晚：动态点过滤、定位丢失后外扩重定位、任务总状态机
 
